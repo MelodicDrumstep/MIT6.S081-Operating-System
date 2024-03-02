@@ -16,12 +16,18 @@
 struct cmd {
   int type;
 };
+//cmd is a struct 
+//that has a type field
 
 struct execcmd {
   int type;
   char *argv[MAXARGS];
   char *eargv[MAXARGS];
 };
+
+//execcmd is a struct
+//That has a type field
+//and arguments and environment arguments
 
 struct redircmd {
   int type;
