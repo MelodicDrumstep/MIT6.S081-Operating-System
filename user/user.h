@@ -4,6 +4,11 @@ typedef long int off_t;
 #endif
 struct stat;
 
+struct sysinfo;
+//The system information struct
+//used in sysinfo system call
+//defined in sysinfo.h
+
 // system calls
 int fork(void);
 int exit(int) __attribute__((noreturn));
@@ -26,6 +31,10 @@ int getpid(void);
 char* sbrk(int);
 int sleep(int);
 int uptime(void);
+int trace(int);
+int sysinfo(struct sysinfo *);
+//Newly added
+
 #ifdef LAB_NET
 int connect(uint32, uint16, uint16);
 #endif

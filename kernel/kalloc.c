@@ -80,3 +80,30 @@ kalloc(void)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
 }
+
+uint64
+fmemory_counting(void)
+{
+  struct run *r;
+  uint64 count = 0;
+
+  //pointer r will be used to traverse the freelist
+  //and couting the number of free memory run pages
+  //stored in "count"
+
+  acquire(&kmem.lock);
+  //locking before accessing kmem : 
+  //many threads may be accessing kmem at the same time!
+
+  for(r = kmem.freelist; r != 0; r = r -> next)
+  {
+    ++count;
+  }
+
+  release(&kmem.lock);
+
+  return count * PGSIZE;
+  //count is the number of pages
+  //And the return value of this function
+  //is the number of bytes
+}

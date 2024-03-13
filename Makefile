@@ -190,6 +190,8 @@ UPROGS=\
 	$U/_zombie\
 	$U/_sleep\
 	$U/_pingpong\
+	$U/_trace\
+	$U/_sysinfotest\
 
 
 ifeq ($(LAB),lock)

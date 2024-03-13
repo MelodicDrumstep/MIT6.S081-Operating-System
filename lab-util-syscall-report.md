@@ -2,8 +2,6 @@
 
 ##### JOHN班-涂文良
 
-最初我的报告是用 markdown 撰写的，这里我直接复制到了该 .txt 文件， markdown 版本在同一目录下的 lab-util-syscall-report.md。
-
 ### Sleep
 
 这一部分都是来写用户函数，也就是运行在用户态和用户空间的部分。 这里我不直接调用 system call, 而是用已经写好的衔接接口，也就是 system call stub。
@@ -47,7 +45,6 @@ static uint64 (*syscalls[])(void) = {
 [SYS_wait]    sys_wait,
 ...
 ```
-
 实际上这里是在声明 + 初始化一个函数指针的数组。 这个数组名字叫 syscalls, 里面的元素都是函数指针， 每个指针指向的函数都是参数为 void 、 返回值为 uint64。
 
 然后在花括号里， 这里的语法是， 把第 x 位的元素设置成 y。

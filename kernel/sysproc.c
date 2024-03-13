@@ -5,6 +5,12 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
+#include "sysinfo.h"
+
+uint64 fmemory_counting(void);
+uint64 fproc_counting(void);
+//Add the prototype
+//for the linker to search for the function
 
 uint64
 sys_exit(void)
@@ -101,4 +107,57 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+uint64
+sys_trace(void)
+{
+  //This function will modify the 
+  //mask_num of the current process
+  //to the value of the first argument
+  int mask_num;
+
+  argint(0, &mask_num);
+  //Fetch the argument from the register a0
+
+  myproc() -> mask_num |= mask_num;
+  //Modify the mask_num of the current process
+  //use "|=" because we want to add the new mask_num
+  //rather than substitution
+
+  return 0;
+}
+
+uint64
+sys_sysinfo(void)
+{
+  uint64 pointer2user_sysinfo;
+  argaddr(0, &pointer2user_sysinfo);
+  //Get the pointer to the user space
+  //It will store the information of system info
+
+  struct proc * current_proc = myproc();
+  //Get the current process
+
+  struct sysinfo info;
+  //Create a new sysinfo struct
+
+  info.freemem = fmemory_counting();
+  //Get the free memory  bytes
+
+  info.nproc = fproc_counting();
+  //Get the number of processes
+
+  // printf("%d\n", info.freemem);
+  // printf("%d\n", info.nproc);
+
+  if(copyout(current_proc -> pagetable, pointer2user_sysinfo, (char *)&info, sizeof(info)) < 0)
+  {
+    return -1;
+  }
+
+  //The info is create inside the kernel space
+  //And I have to copy it to the user space
+
+  return 0;
 }
