@@ -192,7 +192,7 @@ UPROGS=\
 	$U/_pingpong\
 	$U/_trace\
 	$U/_sysinfotest\
-
+	$U/_alarmtest\
 
 ifeq ($(LAB),lock)
 UPROGS += \

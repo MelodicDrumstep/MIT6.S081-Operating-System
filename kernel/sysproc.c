@@ -60,12 +60,15 @@ sys_sleep(void)
   int n;
   uint ticks0;
 
-  
   argint(0, &n);
   acquire(&tickslock);
   ticks0 = ticks;
+
 #ifdef LAB_TRAPS
+  backtrace();
+  //Add the backtrace function here to backtrace the call of functions
 #endif
+
   while(ticks - ticks0 < n){
     if(killed(myproc())){
       release(&tickslock);
@@ -159,5 +162,32 @@ sys_sysinfo(void)
   //The info is create inside the kernel space
   //And I have to copy it to the user space
 
+  return 0;
+}
+
+uint64 
+sys_sigalarm(void)
+{
+  struct proc * my_proc = myproc();
+  int interval;
+  argint(0, &interval);
+  my_proc -> interval = interval;
+  uint64 handler;
+  argaddr(1, &handler);
+  my_proc -> handler = (void(*)())handler;
+  my_proc -> ticks_count = 0;
+  return 0;
+}
+
+uint64
+sys_sigreturn(void)
+{
+  struct proc * my_proc = myproc();
+  if(my_proc -> is_handler)
+  {
+    my_proc -> is_handler = 0;
+    *(my_proc -> trapframe) = *(my_proc -> backup_trapframe);
+    my_proc -> ticks_count = 0;
+  }
   return 0;
 }

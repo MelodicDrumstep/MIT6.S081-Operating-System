@@ -65,6 +65,7 @@ usertrap(void)
     intr_on();
 
     syscall();
+    
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
@@ -78,7 +79,24 @@ usertrap(void)
 
   // give up the CPU if this is a timer interrupt.
   if(which_dev == 2)
+  {
+    //When we have a timer interrupt, we have to renew 
+    //the count of ticks of the process
+    //And if the process has reached the limit of ticks
+    //we set the return PC to be the function
+    p -> ticks_count++;
+    if(p -> is_handler == 0 && p -> ticks_count == p -> interval)
+    {
+      p -> is_handler = 1;
+      p -> ticks_count = 0;
+      *(p -> backup_trapframe) = *(p -> trapframe);
+      p -> a0 = p -> trapframe -> a0;
+      p -> trapframe -> epc = (uint64)p -> handler;
+      //Must have this cast to convert pointer to a integer
+    }
     yield();
+    //give up the CPU 
+  }
 
   usertrapret();
 }

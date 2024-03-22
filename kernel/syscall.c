@@ -103,6 +103,8 @@ extern uint64 sys_mkdir(void);
 extern uint64 sys_close(void);
 extern uint64 sys_trace(void);
 extern uint64 sys_sysinfo(void);
+extern uint64 sys_sigalarm(void);
+extern uint64 sys_sigreturn(void);
 //Newly added
 
 #ifdef LAB_NET
@@ -138,6 +140,8 @@ char * System_calls[] =
     "close",
     "trace",
     "sysinfo",
+    "sigalarm",
+    "sigreturn",
 };
 
 // An array mapping syscall numbers from syscall.h
@@ -166,6 +170,8 @@ static uint64 (*syscalls[])(void) = {
 [SYS_close]   sys_close,
 [SYS_trace]   sys_trace,
 [SYS_sysinfo] sys_sysinfo,
+[SYS_sigalarm] sys_sigalarm,
+[SYS_sigreturn] sys_sigreturn,
 //Newly added
 
 #ifdef LAB_NET
@@ -196,6 +202,11 @@ syscall(void)
       printf("%d: syscall %s -> %d\n", p -> pid, System_calls[num], p -> trapframe -> a0);
       //Syste_calls is an array created by me
       //and p -> trapframe -> a0 is the return value of the system call
+    }
+
+    if(num == SYS_sigreturn)
+    {
+      p -> trapframe -> a0 = p -> a0;
     }
 
   } else {

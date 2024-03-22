@@ -122,6 +122,9 @@ panic(char *s)
   printf("panic: ");
   printf(s);
   printf("\n");
+
+  backtrace();
+
   panicked = 1; // freeze uart output from other CPUs
   for(;;)
     ;
@@ -132,4 +135,32 @@ printfinit(void)
 {
   initlock(&pr.lock, "pr");
   pr.locking = 1;
+}
+
+void
+backtrace(void)
+{
+  uint64 frame_pointer;
+  uint64 return_address;
+  struct proc *p = myproc();
+  if (p == 0)
+  {
+    return;
+    //myproc failed
+  }
+  frame_pointer = r_fp();//Get the frame pointer using inline assembly call r_fp()
+
+  printf("backtrace:\n");
+
+  uint64 up = PGROUNDUP(frame_pointer);
+
+  while (frame_pointer < up) 
+  {
+    return_address = *(uint64 *)(frame_pointer - 8);
+    //Get the return address of the current stack frame
+    //Due to the graph, it's 
+    printf("%p\n", return_address);
+    frame_pointer = *(uint64 *)(frame_pointer - 16);
+    //Get he frame pointer of the previous stack frame
+  }
 }

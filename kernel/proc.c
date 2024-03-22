@@ -119,6 +119,7 @@ allocproc(void)
       release(&p->lock);
     }
   }
+
   return 0;
 
 found:
@@ -147,6 +148,17 @@ found:
   p->context.sp = p->kstack + PGSIZE;
 
   p -> mask_num = 0;
+  p -> interval = -1;
+  p -> handler = 0;
+  p -> ticks_count = -1;
+  p -> is_handler = 0;
+
+  if((p -> backup_trapframe = (struct trapframe * )kalloc()) == 0)
+  {
+    release(&p -> lock);
+    return 0;
+  }
+
 
   return p;
 }
@@ -162,6 +174,13 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+
+  if(p -> backup_trapframe)
+  {
+    kfree((void*)p -> backup_trapframe);
+  }
+  p -> backup_trapframe = 0;
+
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;

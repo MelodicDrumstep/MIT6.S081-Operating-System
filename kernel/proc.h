@@ -106,4 +106,16 @@ struct proc {
   char name[16];               // Process name (debugging)
 
   uint64 mask_num;             // mask number used in trace system call
+
+  int interval;                
+  void (*handler)(void);
+  int ticks_count;             //fields for the "sigalarm" system call 
+  //interval and handler will store the argument pass by user for this system call
+  //ticks_count will store the number of ticks passed since the last alarm signal was sent
+
+  struct trapframe * backup_trapframe; //backup trapframe for the signal handler
+
+  char is_handler; //flag to check if the process is a handler
+
+  int a0; // store the a0 register value
 };

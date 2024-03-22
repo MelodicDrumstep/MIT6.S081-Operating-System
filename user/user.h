@@ -33,6 +33,9 @@ int sleep(int);
 int uptime(void);
 int trace(int);
 int sysinfo(struct sysinfo *);
+int sigalarm(int ticks, void (*handler)());
+int sigreturn(void);
+
 //Newly added
 
 #ifdef LAB_NET

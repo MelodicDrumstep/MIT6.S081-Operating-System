@@ -160,6 +160,8 @@ w_mideleg(uint64 x)
   asm volatile("csrw mideleg, %0" : : "r" (x));
 }
 
+//stvec:The kernel writes the address of its trap handler here; the RISC-V jumps to the
+//address in stvec to handle a trap.
 // Supervisor Trap-Vector Base Address
 // low two bits are mode.
 static inline void 
@@ -223,6 +225,7 @@ w_mscratch(uint64 x)
   asm volatile("csrw mscratch, %0" : : "r" (x));
 }
 
+//scause:RISC-V puts a number here that describes the reason for the trap.
 // Supervisor Trap Cause
 static inline uint64
 r_scause()
