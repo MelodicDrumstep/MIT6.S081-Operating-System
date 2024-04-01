@@ -10,7 +10,7 @@ struct spinlock tickslock;
 uint ticks;
 
 extern char trampoline[], uservec[], userret[];
-int cowfork(pagetable_t pagetable, uint64 va);
+int cow_fault_handler(pagetable_t pagetable, uint64 va);
 int is_cow(pagetable_t pagetable, uint64 va);
 
 // in kernelvec.S, calls kerneltrap().
@@ -71,11 +71,11 @@ usertrap(void)
     
   }
 
-  else if(r_scause() == 15) //cow-fork metting write
+  else if(r_scause() == 13 || r_scause() == 15) //cow-fork metting write
   {
     if(is_cow(p -> pagetable, r_stval()))
     {
-      if(!cowfork(p -> pagetable, r_stval()))
+      if(cow_fault_handler(p -> pagetable, r_stval()) == -1)
       {
         setkilled(p);
       }

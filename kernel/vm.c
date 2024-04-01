@@ -404,67 +404,45 @@ int is_cow(pagetable_t pagetable, uint64 va)
 
 
 // Copy a physical page
-int cowfork(pagetable_t pagetable, uint64 va)
+int cow_fault_handler(pagetable_t pagetable, uint64 va)
 {
-  // if(va >= MAXVA)
-  // {
-  //   return 0;
-  // }
+  if(va >= MAXVA)
+  {
+    return -1;
+  }
   va = PGROUNDDOWN(va);
   pte_t *pte;
   uint64 pa;
   pte = walk(pagetable, va, 0);
   if(pte == 0)
   {
-    panic("cowfork");
+    panic("cow_fault_handler failed");
   }
   if((*pte & PTE_V) == 0)
   {
-    panic("cowfork");
+    panic("cow_fault_handler failed");
     //PTE_V indicates whether it's valid or not
   }
   pa = PTE2PA(*pte);
   //This is the old physical address
 
-  if(count_check(pa, 1))
+  if(!(*pte & PTE_COW))
   {
-    *pte |= PTE_W;
-    *pte &= ~PTE_COW;
-    return pa;
+    return -1;
   }
 
-  uint64 new_pa;
-  if(!(new_pa = (uint64)kalloc()))
-  //alloc a new physical page
-  //new_pa is the new physical address
+  uint64 new_pa = (uint64)kalloc();
+  if(new_pa == 0)
   {
-    return 0;
-  }
-  memmove((void * )new_pa, (const void * ) pa, PGSIZE);
-  //Now move the content from the old physical page to the new physical page
-
-  *pte &= ~PTE_V;
-  uint64 permission = PTE_FLAGS(*pte);
-  permission |= PTE_W;
-  permission &= ~PTE_COW;
-
-  if(mappages(pagetable, va, PGSIZE, new_pa, permission) != 0)
-  {
-    kfree((void *) new_pa);
-    return 0;
+    return -1;
   }
 
-  pa = PGROUNDDOWN(pa);
+  *pte = (PTE_FLAGS(*pte) & (~PTE_COW)) | PTE_W;
+  *pte |= PA2PTE(new_pa);
+  memmove((void *)new_pa, (void *)pa, PGSIZE);
 
-  kfree((void *) pa);
-  //And kfree the old physical page
-  //Notice that this will decrement the refcnt of the page first
-  //And free the page only when the refcnt is 0
-  //Put the address to the page table entry of the 
-  //writing one's pagetable
-  //And remember to copy the flags(permissions)
-
-  return new_pa;
+  kfree((void *)pa);
+  return 0;
 }
 
 // mark a PTE invalid for user access.
@@ -493,21 +471,23 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
   {
     va0 = PGROUNDDOWN(dstva);
     if(va0 >= MAXVA)
+    {
       return -1;
+    }
     pte = walk(pagetable, va0, 0);
-    if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
-      return -1;
     
-    //pa0 = PTE2PA(*pte);
-    pa0 = walkaddr(pagetable, va0);
+    pa0 = PTE2PA(*pte);
     //Newly Added:
     //if this page do not permit writing
     //Then it's a cow-fork page
     //Deep copy it and enable writing
-    // if((*pte & PTE_COW))
-    if(is_cow(pagetable, va0))
+    if(!(*pte & PTE_W))
     {
-      pa0 = cowfork(pagetable, va0);
+      if(cow_fault_handler(pagetable, va0) == -1)
+      {
+        return -1;
+      }
+      pa0 = walkaddr(pagetable, va0);
       if(pa0 == 0)
       {
         return -1;

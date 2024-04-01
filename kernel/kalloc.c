@@ -15,7 +15,7 @@ struct refcnt
   int count;
 };
 
-struct refcnt count_array[(PHYSTOP - KERNBASE) / PGSIZE];
+struct refcnt count_array[(PHYSTOP - KERNBASE) / PGSIZE + 1];
 //This is a count array used for cow-fork 
 //to record the number of references to each page
 
