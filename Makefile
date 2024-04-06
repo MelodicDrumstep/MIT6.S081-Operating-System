@@ -193,6 +193,7 @@ UPROGS=\
 	$U/_trace\
 	$U/_sysinfotest\
 	$U/_alarmtest\
+	$U/_uthread\
 
 ifeq ($(LAB),lock)
 UPROGS += \

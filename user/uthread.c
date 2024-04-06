@@ -10,11 +10,31 @@
 #define STACK_SIZE  8192
 #define MAX_THREAD  4
 
+struct thread_registers
+{
+  uint64 ra;                    //registers
+  uint64 sp;
+  uint64 s0;
+  uint64 s1;
+  uint64 s2;
+  uint64 s3;
+  uint64 s4;
+  uint64 s5;
+  uint64 s6;
+  uint64 s7;
+  uint64 s8;
+  uint64 s9;
+  uint64 s10;
+  uint64 s11;
+};
 
-struct thread {
+struct thread 
+{
   char       stack[STACK_SIZE]; /* the thread's stack */
   int        state;             /* FREE, RUNNING, RUNNABLE */
+  struct thread_registers regs;
 };
+
 struct thread all_thread[MAX_THREAD];
 struct thread *current_thread;
 extern void thread_switch(uint64, uint64);
@@ -60,6 +80,8 @@ thread_schedule(void)
      * Invoke thread_switch to switch from t to next_thread:
      * thread_switch(??, ??);
      */
+    thread_switch((uint64)&(t -> regs), (uint64)&(next_thread -> regs));
+
   } else
     next_thread = 0;
 }
@@ -72,8 +94,15 @@ thread_create(void (*func)())
   for (t = all_thread; t < all_thread + MAX_THREAD; t++) {
     if (t->state == FREE) break;
   }
-  t->state = RUNNABLE;
+  t -> state = RUNNABLE;
   // YOUR CODE HERE
+
+  //firstly, I have to clear the stack and register field of this thread
+  memset((void *)&(t -> stack), 0, STACK_SIZE);
+  memset((void *)&(t -> regs), 0, sizeof(struct thread_registers));
+
+  t -> regs.sp = (uint64)(&(t -> stack[STACK_SIZE])); //set the stack pointer to the top of the stack
+  t -> regs.ra = (uint64)func; //set the return address to the function pointer
 }
 
 void 
