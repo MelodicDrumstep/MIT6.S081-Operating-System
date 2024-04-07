@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "hashmap.h": "c",
+        "mutex": "c"
+    }
+}

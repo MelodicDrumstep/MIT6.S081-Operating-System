@@ -21,12 +21,15 @@ struct run {
 struct {
   struct spinlock lock;
   struct run *freelist;
-} kmem;
+} kmem[NCPU];
 
 void
 kinit()
 {
-  initlock(&kmem.lock, "kmem");
+  for(int i = 0; i < NCPU; i++)
+  {
+    initlock(&kmem[i].lock, "kmem");
+  }
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -53,13 +56,17 @@ kfree(void *pa)
 
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
-
   r = (struct run*)pa;
 
-  acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  release(&kmem.lock);
+  push_off();
+  int cpu_id = cpuid();
+
+  acquire(&kmem[cpu_id].lock);
+  r -> next = kmem[cpu_id].freelist;
+  kmem[cpu_id].freelist = r; //push_front
+  release(&kmem[cpu_id].lock);
+
+  pop_off();
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -70,14 +77,42 @@ kalloc(void)
 {
   struct run *r;
 
-  acquire(&kmem.lock);
-  r = kmem.freelist;
+  push_off();
+  int cpu_id = cpuid();
+  acquire(&kmem[cpu_id].lock);
+  r = kmem[cpu_id].freelist;
   if(r)
-    kmem.freelist = r->next;
-  release(&kmem.lock);
+  {
+    kmem[cpu_id].freelist = r -> next;
+  }
+
+  release(&kmem[cpu_id].lock);
+
+  if(!r)
+  {
+    for(int cpu_id2 = cpu_id + 1; cpu_id2 != cpu_id; cpu_id2 = (cpu_id2 + 1) % NCPU)
+    {
+      acquire(&kmem[cpu_id2].lock);
+      r = kmem[cpu_id2].freelist;
+      if(r)
+      {
+        kmem[cpu_id2].freelist = r -> next;
+        release(&kmem[cpu_id2].lock);
+        break;
+      }
+      else
+      {
+        release(&kmem[cpu_id2].lock);
+      }
+    }
+  }
 
   if(r)
+  { 
     memset((char*)r, 5, PGSIZE); // fill with junk
+  }
+
+  pop_off();
   return (void*)r;
 }
 
@@ -91,16 +126,20 @@ fmemory_counting(void)
   //and couting the number of free memory run pages
   //stored in "count"
 
-  acquire(&kmem.lock);
-  //locking before accessing kmem : 
-  //many threads may be accessing kmem at the same time!
-
-  for(r = kmem.freelist; r != 0; r = r -> next)
+  for(int cpu_id = 0; cpu_id < NCPU; cpu_id++)
   {
-    ++count;
-  }
 
-  release(&kmem.lock);
+    acquire(&kmem[cpu_id].lock);
+    //locking before accessing kmem : 
+    //many threads may be accessing kmem at the same time!
+
+    for(r = kmem[cpu_id].freelist; r != 0; r = r -> next)
+    {
+      ++count;
+    }
+
+    release(&kmem[cpu_id].lock);
+  }
 
   return count * PGSIZE;
   //count is the number of pages

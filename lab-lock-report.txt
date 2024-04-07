@@ -1,0 +1,127 @@
+### Memory Allocator
+
+
+这里的任务就是， 原先是memory allocator维护一个free list， 装着所有可以被分配的空闲页。 
+这样的话多个CPU来分配内存就会产生竞争。现在我们希望改成memory allocator对每个CPU都维护一个free list。 
+CPU分配内存的时候先拿属于自己的那个free list里面的page, 如果自己的空了再去拿其他人的。 这样可以减少竞争。
+
+这个实现起来很直白， 就改数据结构就行了， 改成
+
+```cpp
+struct {
+  struct spinlock lock;
+  struct run *freelist;
+} kmem[NCPU];
+```
+
+### buffer cache
+
+我一开始对这里面的bcache.buf十分疑惑：既然都链式存储了， 后面也没用到buf, 都是通过链表访问， 那这个 buf 是干嘛的呢？ 后来我看书才知道这里的buf相当于把那些真实存在的buf放在这里， 然后维护buf的head / tail串成一个链表。 
+
+我这里要做的工作就是， 原来的buffer cache是用一把大锁， 我这里需要减小锁的颗粒度， 从而提高并发性能， 减少竞争。
+
+来看看优化前会出什么样的性能问题：
+
+我们每次bget的时候， 在遍历整个链表的过程中， 都要持续保持大锁是锁住的状态。 这明显会造成堵塞。
+
+然后这里的替换策略是LRU， 原来的实现方式是release的时候维护链表的顺序， 但是这也是要一直锁住大锁的。这就是硬堵塞了。
+
+所以后来的实现删掉了维护链表顺序的操作， 而是记载每个buf的最后访问时间， LRU的时候直接遍历一遍找出应该替换的元素即可。
+
+这里我做的实际上就是， 我把一个单链表划分成多个单链表， 然后用hashmap把每个元素映射到它属于的单链表。
+
+数据结构是这样的：
+
+```cpp
+struct BUCKET
+{
+  struct buf head;
+  struct spinlock bucket_lock;
+};//BUCKET contains a lock and a header node of struct buf
+
+struct {
+  struct spinlock master_lock;
+  struct buf buf[NBUF];
+  struct BUCKET buckets[BUCKET_SIZE];
+} bcache;
+//Now bcache contain some buckets of linked list
+```
+
+
+### 难点
+
+最开始写出了kernel trap:
+
+
+```shell
+xv6 kernel is booting
+
+hart 1 starting
+hart 2 starting
+scause 0x000000000000000d
+sepc=0x000000008000278c stval=0x0000000000000048
+panic: kerneltrap
+backtrace:
+0x0000000080006480
+0x00000000800020bc
+0x00000000800054b4
+0x0000000080002d0c
+0x0000000080001064
+QEMU: Terminated
+make: warning:  Clock skew detected.  Your build may be incomplete.
+```
+
+
+
+后来发现是一个地方的prev写成head了。 改完之后再运行，又出现了“panic: bget : no buffers”
+```shell
+
+xv6 kernel is booting
+
+hart 1 starting
+hart 2 starting
+panic: bget: no buffers
+backtrace:
+0x0000000080006480
+0x0000000080002806
+0x0000000080002d10
+0x0000000080001064
+QEMU: Terminated
+make: warning:  Clock skew detected.  Your build may be incomplete.
+```
+
+重构了代码之后又是报acquire的错：
+
+```shell
+xv6 kernel is booting
+
+hart 2 starting
+hart 1 starting
+panic: acquire
+backtrace:
+0x00000000800064a0
+0x0000000080006998
+0x0000000080002674
+0x0000000080002754
+0x0000000080002814
+0x0000000080002d2e
+0x0000000080001064
+QEMU: Terminated
+```
+
+然后这个BUG也找到了， 是循环条件写错了
+改好之后又有新bug。。。booting死循环了
+
+```shell
+
+xv6 kernel is booting
+
+hart 2 starting
+hart 1 starting
+ 
+
+```
+
+
+中途发现很多地方都没有更新b -> ticks
+最后发现bug在于我根本没在bget里面更新 buf 对应的ticks, 导致ticks 全都是初始值-1。。。
