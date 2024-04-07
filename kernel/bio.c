@@ -45,8 +45,10 @@ binit(void)
 {
   struct buf *b;
 
+  //init the master lock
   initlock(&bcache.master_lock, "bcache");
 
+  //init every bucket lock
   for(int i = 0; i < BUCKET_SIZE; i++) 
   {
     initlock(&bcache.buckets[i].bucket_lock, "bucket");
@@ -54,6 +56,7 @@ binit(void)
     bcache.buckets[i].head.next = &bcache.buckets[i].head;
   }
 
+  //init sleep lock and the ticks field
   for(b = bcache.buf; b < bcache.buf + NBUF; b++)
   {
     initsleeplock(&b -> lock, "buffer");
@@ -75,14 +78,16 @@ bget(uint dev, uint blockno)
   struct buf *b;
 
   int hash_result = hash(dev, blockno);
+  //Get the bucket number
 
   acquire(&bcache.buckets[hash_result].bucket_lock);
 
   // Is the block already cached?
 
-  for(b = bcache.buckets[hash_result].head.next; b != &bcache.buckets[hash_result].head; b = b -> next){
+  for(b = bcache.buckets[hash_result].head.next; b != &bcache.buckets[hash_result].head; b = b -> next)
+  {
     if(b -> dev == dev && b -> blockno == blockno)
-    {
+    { //This means I find it in the buffer cache!! Hit!
       b -> ticks = ticks;
       b -> refcnt++;
       release(&bcache.buckets[hash_result].bucket_lock);
@@ -91,8 +96,11 @@ bget(uint dev, uint blockno)
     }
   }
 
-  // Not cached.
-  // Recycle the least recently used (LRU) unused buffer.
+  // Not cached. We miss.
+  // Recycle the least recently used (LRU) unused buffer.\
+
+
+  //Try to find a evictable buf in the same bucket
   struct buf * to_be_evicted = 0;
   for(b = bcache.buckets[hash_result].head.prev; b != &bcache.buckets[hash_result].head; b = b -> prev)
   {
@@ -102,8 +110,10 @@ bget(uint dev, uint blockno)
     }
   }
 
-  if(to_be_evicted) //This means I can find the buffer in the double linked list which I hashmap to
+
+  if(to_be_evicted) //This means I can find a evictable buf in the double linked list which I hashmap to
   {
+    //Modify this buf and try to get the sleep lock
     to_be_evicted -> dev = dev;
     to_be_evicted -> blockno = blockno;
     to_be_evicted -> valid = 0; //must be read from disk
@@ -116,6 +126,7 @@ bget(uint dev, uint blockno)
   else //This means I cannot find the buffer in the double linked list which I hashmap to
 //Then I have to find a buffer in the buf array or evict one from a list
   {
+    //try to find a evictable buf in the whole array
     struct buf * to_be_evicted;
     to_be_evicted = 0;
     for(b = bcache.buf; b < bcache.buf + NBUF; b++)
@@ -141,13 +152,17 @@ bget(uint dev, uint blockno)
           b -> refcnt = 1;
           b -> ticks = ticks;
           
+          //Delete it from the origin linked list
           b -> next -> prev = b -> prev;
           b -> prev -> next = b -> next;
+
+          //Added it to the head of the linked list
           b -> next = bcache.buckets[hash_result].head.next;
           b -> prev = &bcache.buckets[hash_result].head;
           bcache.buckets[hash_result].head.next -> prev = b;
           bcache.buckets[hash_result].head.next = b;
 
+          //release and acquire
           release(&bcache.buckets[bucket_num].bucket_lock);
           release(&bcache.buckets[hash_result].bucket_lock);
           acquiresleep(&b -> lock);
@@ -161,6 +176,7 @@ bget(uint dev, uint blockno)
       }
       else
       {
+        //It's not allocated into any bucket
         acquire(&bcache.master_lock);
         if(b -> refcnt == 0)
         {
@@ -170,6 +186,7 @@ bget(uint dev, uint blockno)
           b -> refcnt = 1;
           b -> ticks = ticks;
 
+          //Added it to the head of the hashed linked list
           b -> next = bcache.buckets[hash_result].head.next;
           b -> prev = &bcache.buckets[hash_result].head;
           bcache.buckets[hash_result].head.next -> prev = b;
@@ -221,7 +238,7 @@ bwrite(struct buf *b)
 // Move to the head of the most-recently-used list.
 void
 brelse(struct buf *b)
-{
+{ //Just get the bucket lock and set refcnt to 0
   if(!holdingsleep(&b -> lock))
   {
     panic("brelse");
@@ -237,7 +254,7 @@ brelse(struct buf *b)
 
 void
 bpin(struct buf *b) 
-{
+{ //Just get the bucket lock and refcnt++
   int hash_result = hash(b -> dev, b -> blockno);
   acquire(&bcache.buckets[hash_result].bucket_lock);
   b -> refcnt++;
@@ -246,7 +263,7 @@ bpin(struct buf *b)
 
 void
 bunpin(struct buf *b) 
-{
+{ //Just get the bucket lock and refcnt--
   int hash_result = hash(b -> dev, b -> blockno);
   acquire(&bcache.buckets[hash_result].bucket_lock);
   b -> refcnt--;
