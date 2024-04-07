@@ -97,7 +97,7 @@ bget(uint dev, uint blockno)
   }
 
   // Not cached. We miss.
-  // Recycle the least recently used (LRU) unused buffer.\
+  // Recycle the least recently used (LRU) unused buffer.
 
 
   //Try to find a evictable buf in the same bucket
