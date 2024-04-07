@@ -82,10 +82,36 @@ sys_sleep(void)
 
 
 #ifdef LAB_PGTBL
-int
+uint64 
 sys_pgaccess(void)
 {
-  // lab pgtbl: your code here.
+  uint64 start_addr;
+  argaddr(0, &start_addr);
+  int num;
+  argint(1, &num);
+  uint64 address;
+  argaddr(2, &address);
+  
+  unsigned int mask = 0x0;
+  struct proc * my_proc = myproc();
+  pagetable_t * pagetable = &(my_proc -> pagetable);
+  for(int i = 0; i < num; i++)
+  {
+    pte_t * pte = walk(*pagetable, start_addr + i * PGSIZE, 0);
+    //use walk to find the page table entrys
+    if(pte == 0)
+    {
+      return -1;
+    }
+    if(*pte & PTE_A)
+    {
+      mask |= (1 << i);
+      //This means this page is accessed
+    }
+    *(pte) &= ~PTE_A;
+    //erase the PTE_A bit(I just check, this is not access)
+  }
+  copyout(*pagetable, address, (char *)&mask, sizeof(mask));
   return 0;
 }
 #endif
@@ -191,3 +217,4 @@ sys_sigreturn(void)
   }
   return 0;
 }
+
