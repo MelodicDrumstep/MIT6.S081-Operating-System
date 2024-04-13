@@ -71,7 +71,7 @@ usertrap(void)
     
   }
 
-  else if(r_scause() == 13 || r_scause() == 15) //cow-fork metting write
+  else if(r_scause() == 15) //cow-fork metting write
   {
     if(is_cow(p -> pagetable, r_stval()))
     {

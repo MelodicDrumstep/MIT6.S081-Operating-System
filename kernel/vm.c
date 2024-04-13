@@ -406,10 +406,10 @@ int is_cow(pagetable_t pagetable, uint64 va)
 // Copy a physical page
 int cowfork(pagetable_t pagetable, uint64 va)
 {
-  if(va >= MAXVA)
-  {
-    return 0;
-  }
+  // if(va >= MAXVA)
+  // {
+  //   return 0;
+  // }
   va = PGROUNDDOWN(va);
   pte_t *pte;
   uint64 pa;
@@ -426,7 +426,7 @@ int cowfork(pagetable_t pagetable, uint64 va)
   pa = PTE2PA(*pte);
   //This is the old physical address
 
-  if(count_check(pa, 1) == 1)
+  if(count_check(pa, 1))
   {
     *pte |= PTE_W;
     *pte &= ~PTE_COW;
@@ -453,6 +453,8 @@ int cowfork(pagetable_t pagetable, uint64 va)
     kfree((void *) new_pa);
     return 0;
   }
+
+  pa = PGROUNDDOWN(pa);
 
   kfree((void *) pa);
   //And kfree the old physical page
@@ -487,7 +489,8 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
   uint64 n, va0, pa0;
   pte_t *pte;
 
-  while(len > 0){
+  while(len > 0)
+  {
     va0 = PGROUNDDOWN(dstva);
     if(va0 >= MAXVA)
       return -1;
@@ -495,12 +498,14 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
       return -1;
     
-    pa0 = PTE2PA(*pte);
+    //pa0 = PTE2PA(*pte);
+    pa0 = walkaddr(pagetable, va0);
     //Newly Added:
     //if this page do not permit writing
     //Then it's a cow-fork page
     //Deep copy it and enable writing
-    if((*pte & PTE_COW))
+    // if((*pte & PTE_COW))
+    if(is_cow(pagetable, va0))
     {
       pa0 = cowfork(pagetable, va0);
       if(pa0 == 0)
