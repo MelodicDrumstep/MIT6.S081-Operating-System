@@ -10,8 +10,6 @@ struct spinlock tickslock;
 uint ticks;
 
 extern char trampoline[], uservec[], userret[];
-int cow_fault_handler(pagetable_t pagetable, uint64 va);
-int is_cow(pagetable_t pagetable, uint64 va);
 
 // in kernelvec.S, calls kerneltrap().
 void kernelvec();
@@ -35,7 +33,6 @@ trapinithart(void)
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
 //
-
 void
 usertrap(void)
 {
@@ -68,18 +65,17 @@ usertrap(void)
     intr_on();
 
     syscall();
-    
-  }
-
-  else if(r_scause() == 13 || r_scause() == 15) //cow-fork metting write
+  } 
+  
+  else if(r_scause() == 15) //cow-fork metting write
   {
-    if(is_cow(p -> pagetable, r_stval()))
-    {
-      if(cow_fault_handler(p -> pagetable, r_stval()) == -1)
+    // if(is_cow(p -> pagetable, r_stval()))
+    // {
+      if(cow_fault_handler(p -> pagetable, r_stval()) == 0)
       {
         setkilled(p);
       }
-    }
+    //}
   }
   
   else if((which_dev = devintr()) != 0)
@@ -98,24 +94,7 @@ usertrap(void)
 
   // give up the CPU if this is a timer interrupt.
   if(which_dev == 2)
-  {
-    //When we have a timer interrupt, we have to renew 
-    //the count of ticks of the process
-    //And if the process has reached the limit of ticks
-    //we set the return PC to be the function
-    p -> ticks_count++;
-    if(p -> is_handler == 0 && p -> ticks_count == p -> interval)
-    {
-      p -> is_handler = 1;
-      p -> ticks_count = 0;
-      *(p -> backup_trapframe) = *(p -> trapframe);
-      p -> a0 = p -> trapframe -> a0;
-      p -> trapframe -> epc = (uint64)p -> handler;
-      //Must have this cast to convert pointer to a integer
-    }
     yield();
-    //give up the CPU 
-  }
 
   usertrapret();
 }

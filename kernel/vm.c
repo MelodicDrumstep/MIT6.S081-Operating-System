@@ -6,8 +6,6 @@
 #include "defs.h"
 #include "fs.h"
 
-void count_incre(uint64 pa);
-int count_check(uint64 pa, int expected);
 /*
  * the kernel's page table.
  */
@@ -361,14 +359,23 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   for(i = 0; i < sz; i += PGSIZE)
   {
     if((pte = walk(old, i, 0)) == 0)
+    {
       panic("uvmcopy: pte should exist");
+    }
     if((*pte & PTE_V) == 0)
+    {
       panic("uvmcopy: page not present");
+    }
     pa = PTE2PA(*pte);
     //pa is the target physical address
 
-    *pte &= ~PTE_W;
-    *pte |= PTE_COW;
+    if(*pte & PTE_W)
+    //If it's read only originally, do not 
+    //set the write bit
+    {
+      *pte &= ~PTE_W;
+      *pte |= PTE_COW;
+    }
     // use cow-copy(lazy copy), thus forbid "write" first and tag "cow"
 
     flags = PTE_FLAGS(*pte);
@@ -408,41 +415,42 @@ int cow_fault_handler(pagetable_t pagetable, uint64 va)
 {
   if(va >= MAXVA)
   {
-    return -1;
+    return 0;
   }
   va = PGROUNDDOWN(va);
   pte_t *pte;
   uint64 pa;
   pte = walk(pagetable, va, 0);
-  if(pte == 0)
+  if(pte == 0 || !(*pte & PTE_V) || !(*pte & PTE_U) || !(*pte & PTE_COW))
   {
-    panic("cow_fault_handler failed");
-  }
-  if((*pte & PTE_V) == 0)
-  {
-    panic("cow_fault_handler failed");
-    //PTE_V indicates whether it's valid or not
+    return 0;
   }
   pa = PTE2PA(*pte);
   //This is the old physical address
-
-  if(!(*pte & PTE_COW))
+  if(*pte & PTE_W)
   {
-    return -1;
+    return pa;
   }
 
   uint64 new_pa = (uint64)kalloc();
   if(new_pa == 0)
   {
-    return -1;
+    return 0;
   }
 
-  *pte = (PTE_FLAGS(*pte) & (~PTE_COW)) | PTE_W;
-  *pte |= PA2PTE(new_pa);
-  memmove((void *)new_pa, (void *)pa, PGSIZE);
+  int flags = PTE_FLAGS(*pte);
 
-  kfree((void *)pa);
-  return 0;
+  memmove((void *)new_pa, (void *)pa, PGSIZE);
+  uvmunmap(pagetable, va, 1, 1);
+  *pte = (flags & (~PTE_COW)) | PTE_W;
+  //*pte |= PA2PTE(new_pa);
+
+  if(mappages(pagetable, va, PGSIZE, new_pa, flags))
+  {
+    kfree((void * )new_pa);
+    return 0;
+  }
+  return new_pa;
 }
 
 // mark a PTE invalid for user access.
@@ -465,7 +473,7 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
-  pte_t *pte;
+  //pte_t *pte;
 
   while(len > 0)
   {
@@ -474,25 +482,26 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     {
       return -1;
     }
-    pte = walk(pagetable, va0, 0);
+    // pte = walk(pagetable, va0, 0);
     
-    pa0 = PTE2PA(*pte);
-    //Newly Added:
-    //if this page do not permit writing
-    //Then it's a cow-fork page
-    //Deep copy it and enable writing
-    if(!(*pte & PTE_W))
-    {
-      if(cow_fault_handler(pagetable, va0) == -1)
-      {
-        return -1;
-      }
-      pa0 = walkaddr(pagetable, va0);
+    // pa0 = PTE2PA(*pte);
+    // //Newly Added:
+    // //if this page do not permit writing
+    // //Then it's a cow-fork page
+    // //Deep copy it and enable writing
+    // if(!(*pte & PTE_W))
+    // {
+      pa0 = cow_fault_handler(pagetable, va0);
+      // if(cow_fault_handler(pagetable, va0) == -1)
+      // {
+      //   return -1;
+      // }
+      // pa0 = walkaddr(pagetable, va0);
       if(pa0 == 0)
       {
         return -1;
       }
-    }
+    //}
 
     n = PGSIZE - (dstva - va0);
     if(n > len)
