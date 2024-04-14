@@ -18,15 +18,73 @@ struct run {
   struct run *next;
 };
 
-struct {
+struct 
+{
   struct spinlock lock;
   struct run *freelist;
-} kmem;
+} kmem[NCPU];
+
+struct refcnt
+{
+  struct spinlock lock;
+  int count;
+}; //refcnt is a type representing a refcnt and corresponding lock 
+//for a physical page
+
+struct refcnt count_array[(PHYSTOP - KERNBASE) / PGSIZE + 1];
+//This is a count array used for cow-fork 
+//to record the number of references to each page
+//Notice: physical memory that we can access start from
+//KERNBASE and end at PHYSTOP 
+
+void count_incre(uint64 pa)
+//atomic "refcnt++""
+{
+  int index = (pa - KERNBASE) / PGSIZE;
+  acquire(&count_array[index].lock);
+  count_array[index].count++;
+  release(&count_array[index].lock);
+}
+
+void count_init(uint64 pa, int num)
+//atomic "refcnt = num"
+{
+  int index = (pa - KERNBASE) / PGSIZE;
+  acquire(&count_array[index].lock);
+  count_array[index].count = num;
+  release(&count_array[index].lock);
+}
+
+void count_decre(uint64 pa)
+//atomic "refcnt--"
+{
+  int index = (pa - KERNBASE) / PGSIZE;
+  acquire(&count_array[index].lock);
+  count_array[index].count--;
+  release(&count_array[index].lock);
+}
+
+int count_check(uint64 pa, int expected)
+//atomic "return refcnt == expected"
+{
+  int index = (pa - KERNBASE) / PGSIZE;
+  acquire(&count_array[index].lock);
+  int cnt = count_array[index].count;
+  release(&count_array[index].lock);
+  return cnt == expected;
+}
 
 void
 kinit()
 {
-  initlock(&kmem.lock, "kmem");
+   for(int i = 0; i < NCPU; i++)
+  {
+    initlock(&kmem[i].lock, "kmem");
+  }
+  for(int i = 0; i < (PHYSTOP - KERNBASE) / PGSIZE; i++)
+  {
+    initlock(&count_array[i].lock, "refcnt");
+  }
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -35,8 +93,12 @@ freerange(void *pa_start, void *pa_end)
 {
   char *p;
   p = (char*)PGROUNDUP((uint64)pa_start);
-  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
+  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE){
+    count_init((uint64)p, 1);
+    //set the refcnt to 1
     kfree(p);
+    //decre the refcnt to 0 and free it
+  }
 }
 
 // Free the page of physical memory pointed at by pa,
@@ -51,15 +113,24 @@ kfree(void *pa)
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
+  count_decre((uint64)pa);
+  if(!count_check((uint64)pa, 0))
+    return;
+
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
 
   r = (struct run*)pa;
 
-  acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  release(&kmem.lock);
+  push_off();
+    int cpu_id = cpuid();
+
+    acquire(&kmem[cpu_id].lock);
+    r -> next = kmem[cpu_id].freelist;
+    kmem[cpu_id].freelist = r; //push_front
+    release(&kmem[cpu_id].lock);
+
+    pop_off();
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -70,13 +141,42 @@ kalloc(void)
 {
   struct run *r;
 
-  acquire(&kmem.lock);
-  r = kmem.freelist;
+  push_off();
+  int cpu_id = cpuid();
+  acquire(&kmem[cpu_id].lock);
+  r = kmem[cpu_id].freelist;
   if(r)
-    kmem.freelist = r->next;
-  release(&kmem.lock);
+  {
+    kmem[cpu_id].freelist = r -> next;
+  }
+
+  release(&kmem[cpu_id].lock);
+
+  if(!r)
+  {
+    for(int cpu_id2 = cpu_id + 1; cpu_id2 != cpu_id; cpu_id2 = (cpu_id2 + 1) % NCPU)
+    {
+      acquire(&kmem[cpu_id2].lock);
+      r = kmem[cpu_id2].freelist;
+      if(r)
+      {
+        kmem[cpu_id2].freelist = r -> next;
+        release(&kmem[cpu_id2].lock);
+        break;
+      }
+      else
+      {
+        release(&kmem[cpu_id2].lock);
+      }
+    }
+  }
 
   if(r)
+  { 
     memset((char*)r, 5, PGSIZE); // fill with junk
+    count_init((uint64) r, 1);
+  }
+
+  pop_off();
   return (void*)r;
 }

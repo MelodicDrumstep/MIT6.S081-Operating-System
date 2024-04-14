@@ -303,40 +303,46 @@ uvmfree(pagetable_t pagetable, uint64 sz)
   freewalk(pagetable);
 }
 
-// Given a parent process's page table, copy
-// its memory into a child's page table.
-// Copies both the page table and the
-// physical memory.
-// returns 0 on success, -1 on failure.
-// frees any allocated pages on failure.
+//COW fork version
 int
 uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
   pte_t *pte;
   uint64 pa, i;
-  uint flags;
-  char *mem;
 
-  for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walk(old, i, 0)) == 0)
+  for(i = 0; i < sz; i += PGSIZE)
+  {
+    pte = walk(old, i, 0);
+    //find the pte with the old pagetable
+    if(!pte)
+    {
       panic("uvmcopy: pte should exist");
-    if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
-    pa = PTE2PA(*pte);
-    flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
     }
+    if((*pte & PTE_V) == 0)
+    {
+      //This means it's not valid
+      panic("uvmcopy: page not present");
+    }
+    pa = PTE2PA(*pte);
+    //find the physical address
+    if(*pte & PTE_W)
+    {
+      //if it's writable, then just copy it
+      //and set it to none writable and cow
+      *pte = (*pte & (~PTE_W)) | PTE_COW;
+    }
+
+    //Then map it to the new pagetable
+    if(mappages(new, i, PGSIZE, (uint64)pa, PTE_FLAGS(*pte)))
+    {
+      uvmunmap(new, 0, i / PGSIZE, 1);
+      return -1;
+    }
+
+    count_incre(pa);
+    //remember to increment the reference count
   }
   return 0;
-
- err:
-  uvmunmap(new, 0, i / PGSIZE, 1);
-  return -1;
 }
 
 // mark a PTE invalid for user access.
@@ -359,17 +365,21 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
-  pte_t *pte;
 
-  while(len > 0){
+  while(len > 0)
+  {
     va0 = PGROUNDDOWN(dstva);
-    if(va0 >= MAXVA)
+    pa0 = cow_fault_handler(pagetable, va0);
+    // use cow_fault_handler to output a writable physical address
+    // notice : maybe the pa0 corresponding va0 is not cow
+    // but that doesn't matter, in this case it will return the original physical address
+    // cow_fault_handler will always find a writable one
+
+    if(pa0 == 0)
+    {
       return -1;
-    pte = walk(pagetable, va0, 0);
-    if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0 ||
-       (*pte & PTE_W) == 0)
-      return -1;
-    pa0 = PTE2PA(*pte);
+    }
+    
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
@@ -448,4 +458,72 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+//return 0 if fail
+//otherwise, return the physical address of the right address
+//after handling cow fault
+uint64 cow_fault_handler(pagetable_t pagetable, uint64 va)
+{
+
+  uint64 pa;
+  if(va > MAXVA)
+  {
+    return 0;
+  }
+  pte_t *pte = walk(pagetable, va, 0);
+  if(pte == 0 || !(*pte & PTE_V) || !(*pte & PTE_U))
+  //if I cannot find the pte corresponding to the va
+  //or the pte is not valid
+  //or the pte is not accessible to user
+  //then return 0
+  { 
+    return 0;
+  }
+
+
+  pa = PTE2PA(*pte);
+
+  //If it's writable, write to it directly
+  if(*pte & PTE_W)        
+  {  
+    return pa;
+  }
+
+  //if it's not writable and not cow
+  //return 0
+  if(!(*pte & PTE_COW))
+  {
+    return 0;
+  }
+
+  //then it's not writable and it's cow
+  //deal with cow fault right now
+  int flags = PTE_FLAGS(*pte);
+  //copy the flags
+
+  uint64 new_pa = (uint64)kalloc();
+  //alloc a new space
+
+  if(new_pa == 0) 
+  { 
+    return 0;
+  }
+  memmove((void * )new_pa, (const void * )pa, PGSIZE);
+  //move the contents from the old physical address to the new physical address
+
+  uvmunmap(pagetable, PGROUNDDOWN(va), 1, 1);
+  //unmap the old va with the old pte
+
+  flags = (flags | PTE_W) & (~PTE_COW);
+  // enable writing and it's not cow now
+
+  if(mappages(pagetable, PGROUNDDOWN(va), PGSIZE, new_pa, flags))
+  //map the va with the new_pa
+  {
+    //mapping failed
+    kfree((void * ) new_pa);
+    return 0;
+  }
+  return new_pa;
 }

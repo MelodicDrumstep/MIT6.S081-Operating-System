@@ -65,9 +65,22 @@ usertrap(void)
     intr_on();
 
     syscall();
-  } else if((which_dev = devintr()) != 0){
+  } 
+  else if((which_dev = devintr()) != 0)
+  {
     // ok
-  } else {
+  }
+  else if(r_scause() == 15) // cow fault happen
+  {
+    if(!cow_fault_handler(p -> pagetable, r_stval()))
+    { //try to fix it: it will try to alloc a new physical page 
+      //and do all the stuffs like deleting and creating mappings
+      //If it still failed, kill this process
+      setkilled(p);
+    }
+  } 
+  else 
+  {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     setkilled(p);
