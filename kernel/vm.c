@@ -6,6 +6,8 @@
 #include "defs.h"
 #include "fs.h"
 
+void count_incre(uint64 pa);
+int count_check(uint64 pa, int expected);
 /*
  * the kernel's page table.
  */
@@ -346,8 +348,7 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 
 // Given a parent process's page table, copy
 // its memory into a child's page table.
-// Copies both the page table and the
-// physical memory.
+// cow - copy
 // returns 0 on success, -1 on failure.
 // frees any allocated pages on failure.
 int
@@ -356,28 +357,112 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
-  for(i = 0; i < sz; i += PGSIZE){
+  for(i = 0; i < sz; i += PGSIZE)
+  {
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
+    //pa is the target physical address
+
+    *pte &= ~PTE_W;
+    *pte |= PTE_COW;
+    // use cow-copy(lazy copy), thus forbid "write" first and tag "cow"
+
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
+    //flags is the permission of the page
+
+    if(mappages(new, i, PGSIZE, pa, flags) != 0)
+    //This mapping maps the new pagetable with the same 
+    //physical address as the old pagetable(lazy copy)
+    {
+      uvmunmap(new, 0, i / PGSIZE, 1);
+      return -1;
     }
+    count_incre(pa);
+    //remember to maintain the ref count
   }
   return 0;
+}
 
- err:
-  uvmunmap(new, 0, i / PGSIZE, 1);
-  return -1;
+//check if the page is a cow page
+int is_cow(pagetable_t pagetable, uint64 va)
+{
+  if(va >= MAXVA)
+  {
+    return 0;
+  }
+  pte_t *pte = walk(pagetable, va, 0);
+  if(pte == 0 || (*pte & PTE_V) == 0)
+  {
+    return 0;
+  }
+  return (*pte & PTE_COW);
+}
+
+
+// Copy a physical page
+int cowfork(pagetable_t pagetable, uint64 va)
+{
+  if(va >= MAXVA)
+  {
+    return 0;
+  }
+  va = PGROUNDDOWN(va);
+  pte_t *pte;
+  uint64 pa;
+  pte = walk(pagetable, va, 0);
+  if(pte == 0)
+  {
+    panic("cowfork");
+  }
+  if((*pte & PTE_V) == 0)
+  {
+    panic("cowfork");
+    //PTE_V indicates whether it's valid or not
+  }
+  pa = PTE2PA(*pte);
+  //This is the old physical address
+
+  if(count_check(pa, 1) == 1)
+  {
+    *pte |= PTE_W;
+    *pte &= ~PTE_COW;
+    return pa;
+  }
+
+  uint64 new_pa;
+  if(!(new_pa = (uint64)kalloc()))
+  //alloc a new physical page
+  //new_pa is the new physical address
+  {
+    return 0;
+  }
+  memmove((void * )new_pa, (const void * ) pa, PGSIZE);
+  //Now move the content from the old physical page to the new physical page
+
+  *pte &= ~PTE_V;
+  uint64 permission = PTE_FLAGS(*pte);
+  permission |= PTE_W;
+  permission &= ~PTE_COW;
+
+  if(mappages(pagetable, va, PGSIZE, new_pa, permission) != 0)
+  {
+    kfree((void *) new_pa);
+    return 0;
+  }
+
+  kfree((void *) pa);
+  //And kfree the old physical page
+  //Notice that this will decrement the refcnt of the page first
+  //And free the page only when the refcnt is 0
+  //Put the address to the page table entry of the 
+  //writing one's pagetable
+  //And remember to copy the flags(permissions)
+
+  return new_pa;
 }
 
 // mark a PTE invalid for user access.
@@ -407,10 +492,23 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     if(va0 >= MAXVA)
       return -1;
     pte = walk(pagetable, va0, 0);
-    if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0 ||
-       (*pte & PTE_W) == 0)
+    if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
       return -1;
+    
     pa0 = PTE2PA(*pte);
+    //Newly Added:
+    //if this page do not permit writing
+    //Then it's a cow-fork page
+    //Deep copy it and enable writing
+    if((*pte & PTE_COW))
+    {
+      pa0 = cowfork(pagetable, va0);
+      if(pa0 == 0)
+      {
+        return -1;
+      }
+    }
+
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;

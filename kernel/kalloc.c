@@ -9,6 +9,49 @@
 #include "riscv.h"
 #include "defs.h"
 
+struct refcnt
+{
+  struct spinlock lock;
+  int count;
+};
+
+struct refcnt count_array[(PHYSTOP - KERNBASE) / PGSIZE];
+//This is a count array used for cow-fork 
+//to record the number of references to each page
+
+void count_incre(uint64 pa)
+{
+  int index = (pa - KERNBASE) / PGSIZE;
+  acquire(&count_array[index].lock);
+  count_array[index].count++;
+  release(&count_array[index].lock);
+}
+
+void count_init(uint64 pa, int num)
+{
+  int index = (pa - KERNBASE) / PGSIZE;
+  acquire(&count_array[index].lock);
+  count_array[index].count = num;
+  release(&count_array[index].lock);
+}
+
+void count_decre(uint64 pa)
+{
+  int index = (pa - KERNBASE) / PGSIZE;
+  acquire(&count_array[index].lock);
+  count_array[index].count--;
+  release(&count_array[index].lock);
+}
+
+int count_check(uint64 pa, int expected)
+{
+  int index = (pa - KERNBASE) / PGSIZE;
+  acquire(&count_array[index].lock);
+  int cnt = count_array[index].count;
+  release(&count_array[index].lock);
+  return cnt == expected;
+}
+
 void freerange(void *pa_start, void *pa_end);
 
 extern char end[]; // first address after kernel.
@@ -23,12 +66,19 @@ struct {
   struct run *freelist;
 } kmem[NCPU];
 
+// struct spinlock kmem_master_lock;
+// //Newly added : a new lock to protect the kmem array(as a whole)
+
 void
 kinit()
 {
   for(int i = 0; i < NCPU; i++)
   {
     initlock(&kmem[i].lock, "kmem");
+  }
+  for(int i = 0; i < (PHYSTOP - KERNBASE) / PGSIZE; i++)
+  {
+    initlock(&count_array[i].lock, "refcnt");
   }
   freerange(end, (void*)PHYSTOP);
 }
@@ -39,7 +89,10 @@ freerange(void *pa_start, void *pa_end)
   char *p;
   p = (char*)PGROUNDUP((uint64)pa_start);
   for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
-    kfree(p);
+  {
+    count_init((uint64) p, 1); //set the initial refcount to 1
+    kfree(p); //This will decrement the refcount to 0 and free it
+  }
 }
 
 // Free the page of physical memory pointed at by pa,
@@ -54,19 +107,24 @@ kfree(void *pa)
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
-  // Fill with junk to catch dangling refs.
-  memset(pa, 1, PGSIZE);
-  r = (struct run*)pa;
+  count_decre((uint64) pa);
 
-  push_off();
-  int cpu_id = cpuid();
+  if(count_check((uint64) pa, 0))
+  {
+    // Fill with junk to catch dangling refs.
+    memset(pa, 1, PGSIZE);
+    r = (struct run*)pa;
 
-  acquire(&kmem[cpu_id].lock);
-  r -> next = kmem[cpu_id].freelist;
-  kmem[cpu_id].freelist = r; //push_front
-  release(&kmem[cpu_id].lock);
+    push_off();
+    int cpu_id = cpuid();
 
-  pop_off();
+    acquire(&kmem[cpu_id].lock);
+    r -> next = kmem[cpu_id].freelist;
+    kmem[cpu_id].freelist = r; //push_front
+    release(&kmem[cpu_id].lock);
+
+    pop_off();
+  }
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -110,6 +168,7 @@ kalloc(void)
   if(r)
   { 
     memset((char*)r, 5, PGSIZE); // fill with junk
+    count_init((uint64) r, 1);
   }
 
   pop_off();

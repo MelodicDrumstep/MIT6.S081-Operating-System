@@ -10,6 +10,8 @@ struct spinlock tickslock;
 uint ticks;
 
 extern char trampoline[], uservec[], userret[];
+int cowfork(pagetable_t pagetable, uint64 va);
+int is_cow(pagetable_t pagetable, uint64 va);
 
 // in kernelvec.S, calls kerneltrap().
 void kernelvec();
@@ -33,6 +35,7 @@ trapinithart(void)
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
 //
+
 void
 usertrap(void)
 {
@@ -66,9 +69,25 @@ usertrap(void)
 
     syscall();
     
-  } else if((which_dev = devintr()) != 0){
+  }
+
+  else if(r_scause() == 13 || r_scause() == 15) //cow-fork metting write
+  {
+    if(is_cow(p -> pagetable, r_stval()))
+    {
+      if(!cowfork(p -> pagetable, r_stval()))
+      {
+        setkilled(p);
+      }
+    }
+  }
+  
+  else if((which_dev = devintr()) != 0)
+  {
     // ok
-  } else {
+  } 
+  else 
+  {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     setkilled(p);

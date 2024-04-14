@@ -1,1 +1,1 @@
-LAB=pgtbl
+LAB=cow
