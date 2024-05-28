@@ -383,36 +383,113 @@ static uint
 bmap(struct inode *ip, uint bn)
 {
   uint addr, *a;
-  struct buf *bp;
+  struct buf * bp;
 
-  if(bn < NDIRECT){
-    if((addr = ip->addrs[bn]) == 0){
-      addr = balloc(ip->dev);
+  // This is the case where the block we search for 
+  // is within the direct block
+  if(bn < NDIRECT)
+  {
+    // if bn is within the direct blocks field
+    if((addr = ip -> addrs[bn]) == 0)
+    {
+      // if the block is not allocated, allocate it
+      addr = balloc(ip -> dev);
       if(addr == 0)
+      {
         return 0;
-      ip->addrs[bn] = addr;
+      }
+      ip -> addrs[bn] = addr;
     }
     return addr;
   }
+  // Remember to subtract NDIRECT from bn
   bn -= NDIRECT;
 
-  if(bn < NINDIRECT){
+  // This is the case where the block we search for 
+  // is within the SINGLE indirect block
+  if(bn < NINDIRECT1)
+  {
     // Load indirect block, allocating if necessary.
-    if((addr = ip->addrs[NDIRECT]) == 0){
+    if((addr = ip -> addrs[NDIRECT]) == 0)
+    {
       addr = balloc(ip->dev);
       if(addr == 0)
+      {
         return 0;
+      }
       ip->addrs[NDIRECT] = addr;
     }
-    bp = bread(ip->dev, addr);
-    a = (uint*)bp->data;
-    if((addr = a[bn]) == 0){
+    // Now addr is indirect block
+    bp = bread(ip -> dev, addr);
+    a = (uint*)bp -> data;
+    if((addr = a[bn]) == 0)
+    {
+      // If the block is not allocated, allocate it
       addr = balloc(ip->dev);
-      if(addr){
+      if(addr)
+      {
         a[bn] = addr;
         log_write(bp);
+        // write the indirect block back to disk
       }
     }
+    brelse(bp);
+    return addr;
+  }
+
+  bn -= NINDIRECT1;
+
+  // This is the case where the block we search for 
+  // is within the DOUBLE indirect block
+  // How to decide the 2 indexes? 
+  // I just choose the naive approch: 
+  // 1. bn / INDEXNUM and 2. bn % INDEXNUM
+  if(bn < NINDIRECT2)
+  {
+      // Load indirect block, allocating if necessary.
+    if((addr = ip -> addrs[NDIRECT + 1]) == 0)
+    {
+      addr = balloc(ip->dev);
+      if(addr == 0)
+      {
+        return 0;
+      }
+      ip -> addrs[NDIRECT + 1] = addr;
+    }
+    // Now addr is the first indirect block
+    bp = bread(ip -> dev, addr);
+    a = (uint*)bp -> data;
+    // Use bn / INDEXNUM as the first index
+    if((addr = a[bn / INDEXNUM]) == 0)
+    {
+      // If the block is not allocated, allocate it
+      addr = balloc(ip->dev);
+      if(addr == 0)
+      {
+        return 0;
+      }
+      a[bn / INDEXNUM] = addr;
+      log_write(bp);
+      // write the indirect block back to disk
+    }
+    brelse(bp);
+    // Now addr is the second indirect block
+    bp = bread(ip -> dev, addr);
+    a = (uint*)bp -> data;
+    // use bn % INDEXNUM as the second index
+    if((addr = a[bn % INDEXNUM]) == 0)
+    {
+      // If the block is not allocated, allocate it
+      addr = balloc(ip->dev);
+      if(addr == 0)
+      {
+        return 0;
+      }
+      a[bn % INDEXNUM] = addr;
+      log_write(bp);
+      // write the indirect block back to disk
+    }
+
     brelse(bp);
     return addr;
   }
@@ -428,25 +505,63 @@ itrunc(struct inode *ip)
   struct buf *bp;
   uint *a;
 
-  for(i = 0; i < NDIRECT; i++){
-    if(ip->addrs[i]){
+  for(i = 0; i < NDIRECT; i++)
+  {
+    if(ip->addrs[i])
+    {
       bfree(ip->dev, ip->addrs[i]);
       ip->addrs[i] = 0;
     }
   }
 
-  if(ip->addrs[NDIRECT]){
+  // If the SINGLE index block is not empty, clear the blocks it points to 
+  if(ip -> addrs[NDIRECT])
+  {
     bp = bread(ip->dev, ip->addrs[NDIRECT]);
     a = (uint*)bp->data;
-    for(j = 0; j < NINDIRECT; j++){
+    for(j = 0; j < NINDIRECT1; j++)
+    {
       if(a[j])
+      {
         bfree(ip->dev, a[j]);
+      }
     }
     brelse(bp);
     bfree(ip->dev, ip->addrs[NDIRECT]);
     ip->addrs[NDIRECT] = 0;
   }
   
+  // If the DOUBLE index block is not empty, clear the blocks it points to 
+  // This is just a naive enumerate approach
+  if(ip -> addrs[NDIRECT + 1])
+  {
+    bp = bread(ip->dev, ip->addrs[NDIRECT]);
+    a = (uint*)bp->data;
+    for(j = 0; j < INDEXNUM; j++)
+    {
+      if(a[j])
+      {
+        struct buf * bp2 = bread(ip->dev, a[j]);
+        // SHOULD not use bp here! bp has not been released
+        uint * a2 = (uint*)bp2 -> data;
+        for(int k = 0; k < INDEXNUM; k++)
+        {
+          if(a2[k])
+          {
+            bfree(ip -> dev, a2[k]);
+          }
+        }
+        brelse(bp2);
+        bfree(ip -> dev, ip -> addrs[NDIRECT + 1]);
+        ip -> addrs[NDIRECT + 1] = 0;
+        bfree(ip->dev, a[j]);
+      }
+    }
+    brelse(bp);
+    bfree(ip->dev, ip->addrs[NDIRECT]);
+    ip->addrs[NDIRECT] = 0;
+  }
+
   ip->size = 0;
   iupdate(ip);
 }

@@ -133,6 +133,7 @@ found:
     return 0;
   }
 
+  #ifdef LAB_PGTBL
   //newly added: alloc a page for usyscall 
   //and assign the pid to this struct
   if((p -> usyscall = (struct usyscall *)kalloc()) == 0)
@@ -142,6 +143,7 @@ found:
     return 0;
   }
   p -> usyscall -> pid = p -> pid;
+  #endif
 
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
@@ -183,12 +185,14 @@ freeproc(struct proc *p)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
 
+  #ifdef LAB_PGTBL
   //Newly added : free the physical memory used for usyscall
   if(p -> usyscall)
   {
     kfree((void*)p -> usyscall);
   }
   p -> usyscall = 0;
+  #endif
 
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
@@ -241,6 +245,7 @@ proc_pagetable(struct proc *p)
     return 0;
   }
 
+  #ifdef LAB_PGTBL
   //map the usyscall page
   //read only for user process 
    if(mappages(pagetable, USYSCALL, PGSIZE,
@@ -250,6 +255,7 @@ proc_pagetable(struct proc *p)
     uvmfree(pagetable, 0);
     return 0;
   }
+  #endif
 
   return pagetable;
 }
@@ -261,7 +267,9 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
+  #ifdef LAB_PGTBL
   uvmunmap(pagetable, USYSCALL, 1, 0);
+  #endif
   uvmfree(pagetable, sz);
 }
 

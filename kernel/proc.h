@@ -85,8 +85,10 @@ enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 struct proc {
   struct spinlock lock;
 
+  #ifdef LAB_PGTBL
   //stores the virtual address of usyscall 
   struct usyscall * usyscall;
+  #endif
 
   // p->lock must be held when using these:
   enum procstate state;        // Process state
