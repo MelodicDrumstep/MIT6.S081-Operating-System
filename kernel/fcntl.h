@@ -7,7 +7,6 @@
 // If "open" system call is enabledd with O_NOFOLLOW
 // I will let "open" open the symlink (and not follow the symlink)
 
-#ifdef LAB_MMAP
 #define PROT_NONE       0x0
 #define PROT_READ       0x1
 #define PROT_WRITE      0x2
@@ -20,4 +19,3 @@
 // shared physical pages
 #define MAP_PRIVATE     0x02
 // MAP_PRIVATE means that we should not write back on modifying
-#endif

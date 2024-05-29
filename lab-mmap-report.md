@@ -49,3 +49,204 @@ int munmap(void *addr, size_t length);
 
 + `munmap` 指定的内存区域从 `mmap` 申请内存的尾部结束。
 
+## struct file
+
+我们表示一个文件的结构体是这样实现的:
+
+```c
+struct file {
+#ifdef LAB_NET
+  enum { FD_NONE, FD_PIPE, FD_INODE, FD_DEVICE, FD_SOCK } type;
+#else
+  enum { FD_NONE, FD_PIPE, FD_INODE, FD_DEVICE } type;
+#endif
+  int ref; 
+  // reference count
+
+  char readable;
+  char writable;
+  // permissions
+  struct pipe *pipe; 
+  // a pointer to pipe, only apply to file type FD_PIPE
+
+  struct inode *ip;  
+  // a pointer to inode, only apply to file type FD_INODE and FD_DEVICE
+
+#ifdef LAB_NET
+  struct sock *sock; // FD_SOCK
+#endif
+  uint off;          
+  // offset, only apply to file type FD_INODE
+  short major;       
+  // the device number, only apply to file type FD_DEVICE
+};
+```
+
+## file descriptor 介绍
+
+我们可以用上述 `file` 结构体来描述一个文件的特征， 但有时候传这个结构体很麻烦， 所以我们可以用 `file descriptor` 来加一层抽象。
+
+首先， 我们每个进程都会维护一个 `struct file array` 来表示当前进程打开的所有文件。 
+
+```c
+struct proc
+{
+//...
+    struct file *ofile[NOFILE];  // Open files
+//...
+};
+```
+
+那么其实， 我可以直接用 `index` 来描述一个进程打开的某个文件， 这个 `index` 被我们叫做 `file descriptor`（文件描述符）。
+
+之后， 我们的 `read / write` 等函数都可以传入文件描述符实现一级封装。
+
+# 开工!
+
+## 定义我的 VMA
+
+任务提示中说
+
+```
+Keep track of what mmap has mapped for each process. Define a structure corresponding to the VMA (virtual memory area) described in Lecture 15, recording the address, length, permissions, file, etc. for a virtual memory range created by mmap. Since the xv6 kernel doesn't have a memory allocator in the kernel, it's OK to declare a fixed-size array of VMAs and allocate from that array as needed. A size of 16 should be sufficient.
+```
+
+这个很好理解， 我直接给 PCB (process control block) 加一个区域存一堆 VMA 就可以了。 
+
+```c
+struct vma
+{
+  int used;
+  uint64 starting_addr;
+  int length;
+  int prot;
+  int flags;
+  char filename[MAXPATH];
+  int fd;
+  int offset;
+  // one vma deals with one "mmap"
+  // It will record the starting address, length of this memory block
+  // the permissions, and the backup file name & file descriptor & file offset
+  // used detect whether this vma is being used
+  // this is for allocate new valid vma
+};
+
+// Per-process state
+struct proc 
+{
+  //...
+  struct vma vma[MAX_VMA];
+  //...
+}
+```
+
+然后进程分配的时候做一下初始化:
+
+```c
+// initialize all vma in this process to be unused
+for(int i = 0; i < MAX_VMA; i++)
+{
+  p -> vma[i].used = 0;
+}
+```
+
+## mmap
+
+然后开始写 `mmap`. 大致思路就是， 寻找空闲 `VMA`, 做安全检查， 然后填充 `VMA`. 这里不使用用户提供的 `addr suggestion`, 直接分配在线程使用的最大空间之后。
+
+```c
+uint64 
+sys_mmap(void)
+{
+  struct proc * my_proc = myproc();
+
+  int has_allocated = 0;
+  // Whether there's enough vma
+
+  int index_vma = 0;
+
+  for(; index_vma < MAX_VMA; index_vma++)
+  {
+    if(my_proc -> vma[index_vma].used == 0)
+    {
+      // allocate this vma for this mmap
+      has_allocated = 1;
+      break;
+    }
+  }
+  if(has_allocated == 0)
+  {
+    panic("No available vma!");
+    return -1;
+  }
+
+  //char * mmap(void *addr, size_t length, int prot, int flags,
+  //       int fd, off_t offset);
+  uint64 addr;
+  int length, prot, flags, fd, offset;
+  struct file * file;
+
+  // parsing the argument
+  argaddr(0, &addr);
+  // Notice !! This addr argument is the suggested address by user.
+  // I may not use this addr
+
+  argint(1, &length);
+  argint(2, &prot);
+  argint(3, &flags); 
+  argfd(4, &fd, &file);
+  argint(5, &offset);
+
+  length = PGROUNDUP(length);
+  // Round up to be mutiple of PAGESIZE
+  if(length > MAXVA - my_proc -> sz 
+  // the process size add length will exceed MAXVA (the maximum of virtual address)
+  || (!file -> readable && (prot & PROT_READ))
+  // file is not readable and prot require READ
+  || ((!file -> writable && (prot & PROT_WRITE)) && (flags == MAP_SHARED)))
+  // file is not writable , prot require WRITE and it's shared mapping (must be write back)
+  {
+    return -1;
+  }
+
+  // Fill in the vma
+  struct vma * pointer_to_current_vma = &(my_proc -> vma[index_vma]);
+  pointer_to_current_vma -> used = 1;
+  pointer_to_current_vma -> starting_addr = my_proc -> sz;
+  pointer_to_current_vma -> length = length;
+  pointer_to_current_vma -> prot = prot;
+  pointer_to_current_vma -> flags = flags;
+  pointer_to_current_vma -> fd = fd;
+  pointer_to_current_vma -> file = file;
+  pointer_to_current_vma -> offset = offset;
+
+  my_proc -> sz += length;
+  // Now I have a branch new space
+  // I have to expand the process size
+
+  filedup(file);
+  // filedup will add the refcnt to the file control block
+  // This avoids the file to be closed while mmaping
+
+  return pointer_to_current_vma -> starting_addr;
+}
+```
+
+现在跑 `mmaptest` 会发现， page fault 之后没有 handler 来处理， 所以会崩溃:
+
+```
+$ mmaptest
+mmap_test starting
+test mmap f
+usertrap(): unexpected scause 0x000000000000000d pid=3
+            sepc=0x0000000000000074 stval=0x0000000000005000
+panic: uvmunmap: not mapped
+backtrace:
+0x0000000080006afc
+0x00000000800009ce
+0x0000000080000c56
+0x00000000800012a2
+```
+
+接下来需要写 page fault 的 handler.
+

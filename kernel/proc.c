@@ -165,6 +165,12 @@ found:
   p -> ticks_count = -1;
   p -> is_handler = 0;
 
+  // initialize all vma in this process to be unused
+  for(int i = 0; i < MAX_VMA; i++)
+  {
+    p -> vma[i].used = 0;
+  }
+
   if((p -> backup_trapframe = (struct trapframe * )kalloc()) == 0)
   {
     release(&p -> lock);

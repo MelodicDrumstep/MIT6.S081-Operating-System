@@ -4,16 +4,25 @@ struct file {
 #else
   enum { FD_NONE, FD_PIPE, FD_INODE, FD_DEVICE } type;
 #endif
-  int ref; // reference count
+  int ref; 
+  // reference count
+
   char readable;
   char writable;
-  struct pipe *pipe; // FD_PIPE
-  struct inode *ip;  // FD_INODE and FD_DEVICE
+  // permissions
+  struct pipe *pipe; 
+  // a pointer to pipe, only apply to file type FD_PIPE
+
+  struct inode *ip;  
+  // a pointer to inode, only apply to file type FD_INODE and FD_DEVICE
+
 #ifdef LAB_NET
   struct sock *sock; // FD_SOCK
 #endif
-  uint off;          // FD_INODE
-  short major;       // FD_DEVICE
+  uint off;          
+  // offset, only apply to file type FD_INODE
+  short major;       
+  // the device number, only apply to file type FD_DEVICE
 };
 
 #define major(dev)  ((dev) >> 16 & 0xFFFF)

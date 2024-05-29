@@ -678,7 +678,77 @@ sys_pipe(void)
 uint64 
 sys_mmap(void)
 {
-  return 0;
+  struct proc * my_proc = myproc();
+
+  int has_allocated = 0;
+  // Whether there's enough vma
+
+  int index_vma = 0;
+
+  for(; index_vma < MAX_VMA; index_vma++)
+  {
+    if(my_proc -> vma[index_vma].used == 0)
+    {
+      // allocate this vma for this mmap
+      has_allocated = 1;
+      break;
+    }
+  }
+  if(has_allocated == 0)
+  {
+    panic("No available vma!");
+    return -1;
+  }
+
+  //char * mmap(void *addr, size_t length, int prot, int flags,
+  //       int fd, off_t offset);
+  uint64 addr;
+  int length, prot, flags, fd, offset;
+  struct file * file;
+
+  // parsing the argument
+  argaddr(0, &addr);
+  // Notice !! This addr argument is the suggested address by user.
+  // I may not use this addr
+
+  argint(1, &length);
+  argint(2, &prot);
+  argint(3, &flags); 
+  argfd(4, &fd, &file);
+  argint(5, &offset);
+
+  length = PGROUNDUP(length);
+  // Round up to be mutiple of PAGESIZE
+  if(length > MAXVA - my_proc -> sz 
+  // the process size add length will exceed MAXVA (the maximum of virtual address)
+  || (!file -> readable && (prot & PROT_READ))
+  // file is not readable and prot require READ
+  || ((!file -> writable && (prot & PROT_WRITE)) && (flags == MAP_SHARED)))
+  // file is not writable , prot require WRITE and it's shared mapping (must be write back)
+  {
+    return -1;
+  }
+
+  // Fill in the vma
+  struct vma * pointer_to_current_vma = &(my_proc -> vma[index_vma]);
+  pointer_to_current_vma -> used = 1;
+  pointer_to_current_vma -> starting_addr = my_proc -> sz;
+  pointer_to_current_vma -> length = length;
+  pointer_to_current_vma -> prot = prot;
+  pointer_to_current_vma -> flags = flags;
+  pointer_to_current_vma -> fd = fd;
+  pointer_to_current_vma -> file = file;
+  pointer_to_current_vma -> offset = offset;
+
+  my_proc -> sz += length;
+  // Now I have a branch new space
+  // I have to expand the process size
+
+  filedup(file);
+  // filedup will add the refcnt to the file control block
+  // This avoids the file to be closed while mmaping
+
+  return pointer_to_current_vma -> starting_addr;
 }
 
 uint64 

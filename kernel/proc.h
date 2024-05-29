@@ -1,3 +1,5 @@
+#define MAX_VMA 16
+
 // Saved registers for kernel context switches.
 struct context {
   uint64 ra;
@@ -81,14 +83,36 @@ struct trapframe {
 
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
+struct vma
+{
+  int used;
+  uint64 starting_addr;
+  int length;
+  int prot;
+  int flags;
+  char filename[MAXPATH];
+  int fd;
+  int offset;
+  struct file * file;
+  // one vma deals with one "mmap"
+  // It will record the starting address, length of this memory block
+  // the permissions, and the backup file name & file descriptor & file offset
+  // & file control block pointer
+  // used detect whether this vma is being used
+  // this is for allocate new valid vma
+};
+
 // Per-process state
-struct proc {
+struct proc 
+{
   struct spinlock lock;
 
   #ifdef LAB_PGTBL
   //stores the virtual address of usyscall 
   struct usyscall * usyscall;
   #endif
+
+  struct vma vma[MAX_VMA];
 
   // p->lock must be held when using these:
   enum procstate state;        // Process state
