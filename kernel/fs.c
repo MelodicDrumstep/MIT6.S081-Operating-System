@@ -229,7 +229,7 @@ iupdate(struct inode *ip)
   struct dinode *dip;
 
   bp = bread(ip->dev, IBLOCK(ip->inum, sb));
-  dip = (struct dinode*)bp->data + ip->inum%IPB;
+  dip = (struct dinode*)bp->data + ip->inum % IPB;
   dip->type = ip->type;
   dip->major = ip->major;
   dip->minor = ip->minor;
@@ -296,13 +296,24 @@ ilock(struct inode *ip)
   struct dinode *dip;
 
   if(ip == 0 || atomic_read4(&ip->ref) < 1)
+  {
+    // check if the inode is empty or refcnt < 1
+    // If so, panic
     panic("ilock");
+  }
 
+  // Try to acquire the sleep lock
+  // If cannot get the sleep lock, this thread will sleep
+  // and be waked up when the lock is available
   acquiresleep(&ip->lock);
   
-  if(ip->valid == 0){
-    bp = bread(ip->dev, IBLOCK(ip->inum, sb));
-    dip = (struct dinode*)bp->data + ip->inum%IPB;
+  if(ip->valid == 0)
+  {
+    // ip -> valid represent whether I has been read from disk or not
+    // Then if not, I have to read the inode from disk
+    // avoiding using the garbage inode
+    bp = bread(ip->dev, IBLOCK(ip -> inum, sb));
+    dip = (struct dinode*)bp->data + ip->inum % IPB;
     ip->type = dip->type;
     ip->major = dip->major;
     ip->minor = dip->minor;
@@ -312,7 +323,9 @@ ilock(struct inode *ip)
     brelse(bp);
     ip->valid = 1;
     if(ip->type == 0)
+    {
       panic("ilock: no type");
+    }
   }
 }
 
@@ -338,7 +351,8 @@ iput(struct inode *ip)
 {
   acquire(&itable.lock);
 
-  if(ip->ref == 1 && ip->valid && ip->nlink == 0){
+  if(ip->ref == 1 && ip->valid && ip->nlink == 0)
+  {
     // inode has no links and no other references: truncate and free.
 
     // ip->ref == 1 means no other process can have ip locked,
@@ -671,7 +685,8 @@ dirlookup(struct inode *dp, char *name, uint *poff)
   if(dp->type != T_DIR)
     panic("dirlookup not DIR");
 
-  for(off = 0; off < dp->size; off += sizeof(de)){
+  for(off = 0; off < dp->size; off += sizeof(de))
+  {
     if(readi(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de))
       panic("dirlookup read");
     if(de.inum == 0)
@@ -704,7 +719,8 @@ dirlink(struct inode *dp, char *name, uint inum)
   }
 
   // Look for an empty dirent.
-  for(off = 0; off < dp->size; off += sizeof(de)){
+  for(off = 0; off < dp->size; off += sizeof(de))
+  {
     if(readi(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de))
       panic("dirlink read");
     if(de.inum == 0)
@@ -772,25 +788,30 @@ namex(char *path, int nameiparent, char *name)
   else
     ip = idup(myproc()->cwd);
 
-  while((path = skipelem(path, name)) != 0){
+  while((path = skipelem(path, name)) != 0)
+  {
     ilock(ip);
-    if(ip->type != T_DIR){
+    if(ip->type != T_DIR)
+    {
       iunlockput(ip);
       return 0;
     }
-    if(nameiparent && *path == '\0'){
+    if(nameiparent && *path == '\0')
+    {
       // Stop one level early.
       iunlock(ip);
       return ip;
     }
-    if((next = dirlookup(ip, name, 0)) == 0){
+    if((next = dirlookup(ip, name, 0)) == 0)
+    {
       iunlockput(ip);
       return 0;
     }
     iunlockput(ip);
     ip = next;
   }
-  if(nameiparent){
+  if(nameiparent)
+  {
     iput(ip);
     return 0;
   }

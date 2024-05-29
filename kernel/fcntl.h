@@ -1,8 +1,11 @@
-#define O_RDONLY  0x000
-#define O_WRONLY  0x001
-#define O_RDWR    0x002
-#define O_CREATE  0x200
-#define O_TRUNC   0x400
+#define O_RDONLY   0x000
+#define O_WRONLY   0x001
+#define O_RDWR     0x002
+#define O_CREATE   0x200
+#define O_TRUNC    0x400
+#define O_NOFOLLOW 0x800
+// If "open" system call is enabledd with O_NOFOLLOW
+// I will let "open" open the symlink (and not follow the symlink)
 
 #ifdef LAB_MMAP
 #define PROT_NONE       0x0

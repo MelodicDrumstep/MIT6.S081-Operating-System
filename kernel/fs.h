@@ -38,6 +38,7 @@ struct dinode {
   short type;           // File type
   short major;          // Major device number (T_DEVICE only)
   short minor;          // Minor device number (T_DEVICE only)
+  char  sym_link_path;  // the path represented by the symbolic link (T_SYMLINK only)
   short nlink;          // Number of links to inode in file system
   uint size;            // Size of file (bytes)
   uint addrs[NDIRECT + 2];   // Data block addresses

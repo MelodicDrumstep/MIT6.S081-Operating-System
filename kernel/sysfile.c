@@ -16,6 +16,9 @@
 #include "file.h"
 #include "fcntl.h"
 
+static struct inode*
+create(char *path, short type, short major, short minor);
+
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
 static int
@@ -120,36 +123,76 @@ sys_fstat(void)
 }
 
 // Create the path new as a link to the same inode as old.
+// This is HARD LINK
 uint64
 sys_link(void)
 {
   char name[DIRSIZ], new[MAXPATH], old[MAXPATH];
+  // "name" stores the file name
+  // "new" is the new file path
+  // "old" is the old file path
   struct inode *dp, *ip;
+  // dp is the pointer to the directory inode
+  // ip is the pointer to the file inode
 
   if(argstr(0, old, MAXPATH) < 0 || argstr(1, new, MAXPATH) < 0)
+  {
     return -1;
+  }
+  // Get "old" and "new" from the argument
 
   begin_op();
-  if((ip = namei(old)) == 0){
+  // Notice that we have to enclose every operation with file system
+  // to be inside begin_op and end_op
+  // to ensure crash safety
+
+  if((ip = namei(old)) == 0)
+  {
     end_op();
     return -1;
   }
+  // Try to find the inode w.r.t. name old 
+  // If failed, [end_op] and return
+  // (Remember to end_op!! Otherwise this transaction will continue)
 
   ilock(ip);
-  if(ip->type == T_DIR){
+  // Acquire the sleep lock of this inode
+  // And read from disk to renew its value if needed
+
+  if(ip->type == T_DIR)
+  {
+    // If this inode represent a directory
+    // release the lock and end_op and return
+    // HARD LINK can not be used with directory
     iunlockput(ip);
+    // iunlockput will unlock the sleep lock
+    // decrease a refcnt
+    // and it recnt drop to 0 and link num is 0
+    // release the resources of this inode
     end_op();
     return -1;
   }
 
   ip->nlink++;
+  // add the link number
   iupdate(ip);
+  // write back the inode in memory to disk
   iunlock(ip);
+  // unlock the sleep lock
 
   if((dp = nameiparent(new, name)) == 0)
+  {
+    // get the parent directory inode
+    // Notice that "name" has not been initialized by sys_link
+    // It will be filled by nameiparent to the file name
     goto bad;
+  }
   ilock(dp);
-  if(dp->dev != ip->dev || dirlink(dp, name, ip->inum) < 0){
+  if(dp->dev != ip->dev || dirlink(dp, name, ip->inum) < 0)
+  {
+    // dirlink will add (name, inum) to the directory represented by dp
+    // So I will store the inode fetched from another path inside this directory
+    // This will create hard link because we shared the same inode
     iunlockput(dp);
     goto bad;
   }
@@ -161,12 +204,66 @@ sys_link(void)
   return 0;
 
 bad:
+  // error happens
+  // nlink-- and write back and drop the refcnt
   ilock(ip);
   ip->nlink--;
   iupdate(ip);
   iunlockput(ip);
   end_op();
   return -1;
+}
+
+// Create the path new as a link to the same inode as old.
+// This is SOFT LINK
+uint64
+sys_symlink(void)
+{
+  char new[MAXPATH], old[MAXPATH];
+  // "new" is the new file path
+  // "old" is the old file path
+  struct inode *ip;
+  // dp is the pointer to the directory inode
+  // we will create a new inode for the link file
+  // and assign it to ip.
+
+  if(argstr(0, old, MAXPATH) < 0 || argstr(1, new, MAXPATH) < 0)
+  {
+    return -1;
+  }
+  // Get "old" and "new" from the argument
+
+  begin_op();
+  // Notice that we have to enclose every operation with file system
+  // to be inside begin_op and end_op
+  // to ensure crash safety
+
+  if((ip = create(new, T_SYMLINK, 0, 0)))
+  {
+    end_op();
+    return -1;
+  }
+
+  strncpy(&(ip -> sym_link_path), old, MAXPATH);
+
+  // Try to Create a new symbolic linked file
+  // If failed, [end_op] and return
+  // (Remember to end_op!! Otherwise this transaction will continue)
+
+
+  ilock(ip);
+  // Acquire the sleep lock of this inode
+  // And read from disk to renew its value if needed
+
+  iupdate(ip);
+  // write back the inode in memory to disk
+  iunlock(ip);
+  // unlock the sleep lock
+  iput(ip);
+
+  end_op();
+
+  return 0;
 }
 
 // Is the directory dp empty except for "." and ".." ?
@@ -316,32 +413,68 @@ sys_open(void)
 
   begin_op();
 
-  if(omode & O_CREATE){
+  if(omode & O_CREATE)
+  {
     ip = create(path, T_FILE, 0, 0);
-    if(ip == 0){
+    if(ip == 0)
+    {
       end_op();
       return -1;
     }
-  } else {
-    if((ip = namei(path)) == 0){
+  } 
+  else 
+  {
+    if((ip = namei(path)) == 0)
+    {
+      // Get the inode pointer and check if it's valid
       end_op();
       return -1;
     }
+
+    // Follow the symbolic link
+    for(int i = 0; i < 10; i++)
+    {
+      if(ip -> type == T_SYMLINK && !(omode & O_NOFOLLOW))
+      {
+        strncpy(path, &(ip -> sym_link_path), MAXPATH);
+        // Modify the path to be the path represented by this soft link
+        if((ip = namei(path)) == 0)
+        {
+          // Get the inode pointer and check if it's valid
+          end_op();
+          return -1;
+        }
+      }
+    }
+
+    // If ip is still symbolic link inode
+    // Then I assume it's cyclic
+    // then panic and return
+    if(ip -> type == T_SYMLINK)
+    {
+      panic("Cyclic symbolic link");
+      return -1;
+    }
+
     ilock(ip);
-    if(ip->type == T_DIR && omode != O_RDONLY){
+    // Cannot ope a directory without read only
+    if(ip->type == T_DIR && omode != O_RDONLY)
+    {
       iunlockput(ip);
       end_op();
       return -1;
     }
   }
 
-  if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
+  if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV))
+  {
     iunlockput(ip);
     end_op();
     return -1;
   }
 
-  if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
+  if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0)
+  {
     if(f)
       fileclose(f);
     iunlockput(ip);
@@ -349,10 +482,13 @@ sys_open(void)
     return -1;
   }
 
-  if(ip->type == T_DEVICE){
+  if(ip->type == T_DEVICE)
+  {
     f->type = FD_DEVICE;
     f->major = ip->major;
-  } else {
+  } 
+  else 
+  {
     f->type = FD_INODE;
     f->off = 0;
   }
@@ -360,7 +496,8 @@ sys_open(void)
   f->readable = !(omode & O_WRONLY);
   f->writable = (omode & O_WRONLY) || (omode & O_RDWR);
 
-  if((omode & O_TRUNC) && ip->type == T_FILE){
+  if((omode & O_TRUNC) && ip -> type == T_FILE)
+  {
     itrunc(ip);
   }
 
