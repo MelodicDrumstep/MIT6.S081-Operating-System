@@ -7,6 +7,7 @@
 #include "defs.h"
 #include "fcntl.h"
 #include "struct_file.h"
+#include "struct_inode.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -108,6 +109,7 @@ usertrap(void)
     }
 
     struct inode * ip = pointer_to_vma -> vma_file -> ip;
+    
     // Get the inode pointer of this file because I need to read the data
     // of the first 4KB
 
@@ -121,19 +123,23 @@ usertrap(void)
     // Now I haven't create any mapping in the page table
 
     memset((void * )pa, 0, PGSIZE);
+
+    begin_op();
     ilock(ip);
 
     uint64 read_file_offset = pointer_to_vma -> offset + (va - pointer_to_vma -> starting_addr);
     // I should read the first 4KB w.r.t va
     // So the starting point would be (va - addr_file) + offset
 
-    if(readi(ip, 0, pa, read_file_offset, PGSIZE) < 0)
+    if(readi(ip, 0, (uint64)pa, read_file_offset, PGSIZE) < 0)
     {
       iunlockput(ip);
+      end_op();
       panic("can not read from the file");
     }
 
     iunlockput(ip);
+    end_op();
 
     // Now set the PTE flags according to the 
     // vma flags
@@ -155,7 +161,7 @@ usertrap(void)
     flags |= PTE_U;
     // Let the user access this page
 
-    if(mappages(p -> pagetable, va, PGSIZE, pa, flags) < 0)
+    if(mappages(p -> pagetable, va, PGSIZE, (uint64)pa, flags) < 0)
     {
       kfree((void * )pa);
       panic("Mapping failed");
