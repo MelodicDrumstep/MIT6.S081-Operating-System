@@ -35,7 +35,16 @@ int trace(int);
 int sysinfo(struct sysinfo *);
 int sigalarm(int ticks, void (*handler)());
 int sigreturn(void);
+
+#ifdef LAB_FS
 int symlink(char * target, char * path);
+#endif
+
+#ifdef LAB_MMAP
+char * mmap(void *addr, size_t length, int prot, int flags,
+           int fd, off_t offset);
+int munmap(void *addr, size_t length);
+#endif
 
 //Newly added
 

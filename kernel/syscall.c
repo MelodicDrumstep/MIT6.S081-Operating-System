@@ -105,7 +105,15 @@ extern uint64 sys_trace(void);
 extern uint64 sys_sysinfo(void);
 extern uint64 sys_sigalarm(void);
 extern uint64 sys_sigreturn(void);
+
+#ifdef LAB_FS
 extern uint64 sys_symlink(void);
+#endif
+
+#ifdef LAB_MMAP
+extern uint64 sys_mmap(void);
+extern uint64 sys_munmap(void);
+#endif
 //Newly added
 
 #ifdef LAB_NET
@@ -144,6 +152,8 @@ char * System_calls[] =
     "sigalarm",
     "sigreturn",
     "symlink",
+    "mmap",
+    "munmap",
 };
 
 // An array mapping syscall numbers from syscall.h
@@ -174,7 +184,15 @@ static uint64 (*syscalls[])(void) = {
 [SYS_sysinfo] sys_sysinfo,
 [SYS_sigalarm] sys_sigalarm,
 [SYS_sigreturn] sys_sigreturn,
-[SYS_symlink] sys_symlink
+
+#ifdef LAB_MMAP
+[SYS_mmap]    sys_mmap,
+[SYS_munmap]  sys_munmap,
+#endif
+
+#ifdef LAB_FS
+[SYS_symlink] sys_symlink,
+#endif
 //Newly added
 
 #ifdef LAB_NET

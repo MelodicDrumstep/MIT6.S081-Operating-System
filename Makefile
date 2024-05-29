@@ -91,6 +91,7 @@ CFLAGS = -Wall -Werror -O -fno-omit-frame-pointer -ggdb -gdwarf-2
 ifdef LAB
 LABUPPER = $(shell echo $(LAB) | tr a-z A-Z)
 XCFLAGS += -DSOL_$(LABUPPER) -DLAB_$(LABUPPER)
+# LAB_XXX will be defined here by CFLAGS
 endif
 
 CFLAGS += $(XCFLAGS)
@@ -247,7 +248,10 @@ UPROGS += \
 	$U/_symlinktest
 endif
 
-
+ifeq ($(LAB),mmap)
+UPROGS += \
+	$U/_mmaptest
+endif
 
 ifeq ($(LAB),net)
 UPROGS += \
