@@ -811,6 +811,10 @@ bad:
 
 现在我需要思考， `symbolic link(soft link)` 和 `hard link` 有什么区别？ 区别在于， `hard link` 在目录下存储了真实的共享的 `inode`, 而 `symbolic link` 只在目录下存储了文件路径。 所以 `symbolic link` 是更加"间接"的。
 
+```
+注： 这部分思路一开始是错误的， 实际上我不能修改 inode 结构体的格式与大小。 后面我会在出现 bug 之后对这一思路进行修正。
+```
+
 那么我需要一个位置来存储 `symbolic link` 存储的文件路径。 我可以把 `symbolic link` 对应的文件视为一个普通文件， 然后把对应的文件路径存入这个文件吗？ 理论上可以， 但是我们这里要求除了 `open`, 其他的系统调用都是 `not follow symbolic link` 的。 它们可以修改文件内容。 另一方面， 这样存储还要访问文件 `block`, 效率不高。
 
 那我不妨直接给 `inode` 增加一个区域， 存储这个路径好了。 所以我需要修改 `dinode` 和 `inode` 的原型。
@@ -853,5 +857,745 @@ struct inode {
 
 `symlink` 需要新创建一个 `inode`, 类型为 `T_SYMLINK`, 然后把新路径存入这个 `inode` 中。 `link` 不用新建 `inode`， 只需要把 `(name, inode_num)` 存入目录即可。
 
+按照这种思路， 我实现了 `sys_symlink` 和 `sysopen`:
+
+```c
+// Create the path new as a link to the same inode as old.
+// This is SOFT LINK
+uint64
+sys_symlink(void)
+{
+  char new[MAXPATH], old[MAXPATH];
+  // "new" is the new file path
+  // "old" is the old file path
+  struct inode *ip;
+  // dp is the pointer to the directory inode
+  // we will create a new inode for the link file
+  // and assign it to ip.
+
+  if(argstr(0, old, MAXPATH) < 0 || argstr(1, new, MAXPATH) < 0)
+  {
+    return -1;
+  }
+  // Get "old" and "new" from the argument
+
+  begin_op();
+  // Notice that we have to enclose every operation with file system
+  // to be inside begin_op and end_op
+  // to ensure crash safety
+
+  if((ip = create(new, T_SYMLINK, 0, 0)))
+  {
+    end_op();
+    return -1;
+  }
+
+  strncpy(&(ip -> sym_link_path), old, MAXPATH);
+
+  // Try to Create a new symbolic linked file
+  // If failed, [end_op] and return
+  // (Remember to end_op!! Otherwise this transaction will continue)
+
+
+  ilock(ip);
+  // Acquire the sleep lock of this inode
+  // And read from disk to renew its value if needed
+
+  iupdate(ip);
+  // write back the inode in memory to disk
+  iunlock(ip);
+  // unlock the sleep lock
+  iput(ip);
+
+  end_op();
+
+  return 0;
+}
+
+uint64
+sys_open(void)
+{
+  char path[MAXPATH];
+  int fd, omode;
+  struct file *f;
+  struct inode *ip;
+  int n;
+
+  argint(1, &omode);
+  if((n = argstr(0, path, MAXPATH)) < 0)
+    return -1;
+
+  begin_op();
+
+  if(omode & O_CREATE)
+  {
+    ip = create(path, T_FILE, 0, 0);
+    if(ip == 0)
+    {
+      end_op();
+      return -1;
+    }
+  } 
+  else 
+  {
+    if((ip = namei(path)) == 0)
+    {
+      // Get the inode pointer and check if it's valid
+      end_op();
+      return -1;
+    }
+
+    // Follow the symbolic link
+    for(int i = 0; i < 10; i++)
+    {
+      if(ip -> type == T_SYMLINK && !(omode & O_NOFOLLOW))
+      {
+        strncpy(path, &(ip -> sym_link_path), MAXPATH);
+        // Modify the path to be the path represented by this soft link
+        if((ip = namei(path)) == 0)
+        {
+          // Get the inode pointer and check if it's valid
+          end_op();
+          return -1;
+        }
+      }
+    }
+
+    // If ip is still symbolic link inode
+    // Then I assume it's cyclic
+    // then panic and return
+    if(ip -> type == T_SYMLINK)
+    {
+      panic("Cyclic symbolic link");
+      return -1;
+    }
+
+    ilock(ip);
+    // Cannot ope a directory without read only
+    if(ip->type == T_DIR && omode != O_RDONLY)
+    {
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
+  }
+
+  if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV))
+  {
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+
+  if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0)
+  {
+    if(f)
+      fileclose(f);
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+
+  if(ip->type == T_DEVICE)
+  {
+    f->type = FD_DEVICE;
+    f->major = ip->major;
+  } 
+  else 
+  {
+    f->type = FD_INODE;
+    f->off = 0;
+  }
+  f->ip = ip;
+  f->readable = !(omode & O_WRONLY);
+  f->writable = (omode & O_WRONLY) || (omode & O_RDWR);
+
+  if((omode & O_TRUNC) && ip -> type == T_FILE)
+  {
+    itrunc(ip);
+  }
+
+  iunlock(ip);
+  end_op();
+
+  return fd;
+}
+
+```
+
+然后我 `make qemu` 发现写出了这样的 bug:
+
+```
+mkfs/mkfs fs.img README  user/_cat user/_echo user/_forktest user/_grep user/_init user/_kill user/_ln user/_ls user/_mkdir user/_rm user/_sh user/_stressfs user/_usertests user/_grind user/_wc user/_zombie  user/_bigfile user/_symlinktest
+mkfs: mkfs/mkfs.c:85: main: Assertion `(BSIZE % sizeof(struct dinode)) == 0' failed.
+make: *** [Makefile:264: fs.img] Aborted
+```
+
+这个报错是说， 我不能修改 `dinode, inode` 结构体的大小。 实际上这也很合理： `inode` 是按照固定格式组织在一起的， 一个 `block` 可以存多个 `inode`， 自然我不能随便改它的结构的。
+
+那看来我的思路是有问题的。 我应该把路径直接存入这个 `T_SYMLINK` 文件内容中。 (可以就存在前几个字节)
+
+那就用提供好的 `write_i` 和 `read_i` 函数。 它们的原型是
+
+```c
+// Write data to inode.
+// Caller must hold ip->lock.
+// If user_src==1, then src is a user virtual address;
+// otherwise, src is a kernel address.
+// Returns the number of bytes successfully written.
+// If the return value is less than the requested n,
+// there was an error of some kind.
+int
+writei(struct inode *ip, int user_src, uint64 src, uint off, uint n);
+
+// Read data from inode.
+// Caller must hold ip->lock.
+// If user_dst==1, then dst is a user virtual address;
+// otherwise, dst is a kernel address.
+int
+readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n);
+```
+
+这里我使用 `writei` 和 `readi` 修改了函数， 写成了这样:
+
+```c
+// Create the path new as a link to the same inode as old.
+// This is SOFT LINK
+uint64
+sys_symlink(void)
+{
+  char new[MAXPATH], old[MAXPATH];
+  // "new" is the new file path
+  // "old" is the old file path
+  struct inode *ip;
+  // we will create a new inode for the link file
+  // and assign it to ip.
+
+  if(argstr(0, old, MAXPATH) < 0 || argstr(1, new, MAXPATH) < 0)
+  {
+    return -1;
+  }
+  // Get "old" and "new" from the argument
+
+  begin_op();
+  // Notice that we have to enclose every operation with file system
+  // to be inside begin_op and end_op
+  // to ensure crash safety
+
+  if((ip = namei(new)))
+  {
+    // This means this file name already exists
+    // Which leads to error state
+    end_op();
+    return -1;
+  }
+
+  if((ip = create(new, T_SYMLINK, 0, 0)) == 0)
+  {
+    // Try to Create a new symbolic linked file
+    // If failed, [end_op] and return
+    // (Remember to end_op!! Otherwise this transaction will continue)
+    end_op();
+    return -1;
+  }
+  ilock(ip);
+
+  if(writei(ip, 0, (uint64)old, 0, MAXPATH) < 0)
+  {
+    // Use "writei" to write the old path to the first bytes inside the first block
+    iunlock(ip);
+    iput(ip);
+    end_op();
+    return -1;
+  }
+
+  iunlockput(ip);
+  // Remember to use iunlockput to drop the refcnt and release the lock
+  // at the same time
+  end_op();
+
+  return 0;
+}
+
+
+uint64
+sys_open(void)
+{
+  char path[MAXPATH];
+  int fd, omode;
+  struct file *f;
+  struct inode *ip;
+  int n;
+
+  argint(1, &omode);
+  if((n = argstr(0, path, MAXPATH)) < 0)
+    return -1;
+
+  begin_op();
+
+  if(omode & O_CREATE)
+  {
+    ip = create(path, T_FILE, 0, 0);
+    if(ip == 0)
+    {
+      end_op();
+      return -1;
+    }
+  } 
+  else 
+  {
+    if((ip = namei(path)) == 0)
+    {
+      // Get the inode pointer and check if it's valid
+      end_op();
+      return -1;
+    }
+
+    ilock(ip);
+
+    // Follow the symbolic link
+    int i;
+    for(i = 0; i < 10; i++)
+    {
+      if(ip -> type == T_SYMLINK && !(omode & O_NOFOLLOW))
+      {
+        memset(path, 0, MAXPATH);
+        if(readi(ip, 0, (uint64)(path), 0, MAXPATH) <= 0)
+        {
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
+        // Modify the path to be the path represented by this soft link
+
+        if((ip = namei(path)) == 0)
+        {
+          // Get the inode pointer and check if it's valid
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
+      }
+      else
+      {
+        break;
+      }
+    }
+
+    // If ip is still symbolic link inode
+    // Then I assume it's cyclic
+    // then panic and return
+    if(i == 10 && ip -> type == T_SYMLINK)
+    {
+      iunlockput(ip);
+      end_op();
+      panic("Cyclic symbolic link");
+      return -1;
+    }
+    
+    // Cannot ope a directory without read only
+    if(ip->type == T_DIR && omode != O_RDONLY)
+    {
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
+  }
+
+  if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV))
+  {
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+
+  if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0)
+  {
+    if(f)
+      fileclose(f);
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+
+  if(ip->type == T_DEVICE)
+  {
+    f->type = FD_DEVICE;
+    f->major = ip->major;
+  } 
+  else 
+  {
+    f->type = FD_INODE;
+    f->off = 0;
+  }
+  f->ip = ip;
+  f->readable = !(omode & O_WRONLY);
+  f->writable = (omode & O_WRONLY) || (omode & O_RDWR);
+
+  if((omode & O_TRUNC) && ip -> type == T_FILE)
+  {
+    itrunc(ip);
+  }
+
+  iunlock(ip);
+  end_op();
+
+  return fd;
+}
+```
+
+然后成功运行了 `make qemu`. 但是此时发现 `symlinktest` 会卡死， 我猜是有死锁了。 
+
+找了很久终于发现了问题:
+
+```c
+// RIGHT version
+  if((ip = create(new, T_SYMLINK, 0, 0)) == 0)
+  {
+    // Try to Create a new symbolic linked file
+    // If failed, [end_op] and return
+    // (Remember to end_op!! Otherwise this transaction will continue)
+    end_op();
+    return -1;
+  }
+  // ilock(ip);
+  // Notice !!!! create has already acquire the lock of this inode
+  // SO DO NOT acquire it again!!!
+
+// WRONG version
+  if((ip = create(new, T_SYMLINK, 0, 0)) == 0)
+  {
+    // Try to Create a new symbolic linked file
+    // If failed, [end_op] and return
+    // (Remember to end_op!! Otherwise this transaction will continue)
+    end_op();
+    return -1;
+  }
+  ilock(ip);
+```
+
+然后发现这个条件写错了
+
+```c
+// RIGHT version
+  if((ip = create(new, T_SYMLINK, 0, 0)) == 0)
+  {
+    end_op();
+    return -1;
+  }
+// WRONG version
+  if((ip = create(new, T_SYMLINK, 0, 0)))
+  {
+    end_op();
+    return -1;
+  }
+```
+
+之后出现了 `unlock panic`, 我找了很久， 发现我每次拿新的 `inode` 的时候， 没有释放前一个 `inode` 的锁并拿下一个 `inode` 的锁:
+
+```c
+// --------------------------------------
+// RIGHT version
+    if((ip = namei(path)) == 0)
+    {
+      // Get the inode pointer and check if it's valid
+      end_op();
+      return -1;
+    }
+
+    ilock(ip);
+    //lock the first ip
+
+    // Follow the symbolic link
+    int i;
+    // i represent the loop number
+    for(i = 0; i < 10; i++)
+    {
+      if(ip -> type == T_SYMLINK && !(omode & O_NOFOLLOW))
+      {
+        memset(path, 0, MAXPATH);
+        if(readi(ip, 0, (uint64)(path), 0, MAXPATH) <= 0)
+        {
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
+        // Modify the path to be the path represented by this soft link
+
+        iunlockput(ip);
+        // Notice!!! I have to unlock and put the former inode
+        // Before fetching the next inode!!!
+        // Otherwise it will lead to deadlock or unlock panic
+
+        if((ip = namei(path)) == 0)
+        {
+          // Get the inode pointer and check if it's valid
+          end_op();
+          return -1;
+        }
+
+        ilock(ip);
+        // Remeber to lock the branch new inode here!!
+      }
+      else
+      {
+        break;
+      }
+    }
+// ---------------------------------------------
+
+
+
+// ---------------------------------------------
+// WRONG version
+    ilock(ip);
+
+    // Follow the symbolic link
+    int i;
+    for(i = 0; i < 10; i++)
+    {
+      if(ip -> type == T_SYMLINK && !(omode & O_NOFOLLOW))
+      {
+        memset(path, 0, MAXPATH);
+        if(readi(ip, 0, (uint64)(path), 0, MAXPATH) <= 0)
+        {
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
+        // Modify the path to be the path represented by this soft link
+
+        if((ip = namei(path)) == 0)
+        {
+          // Get the inode pointer and check if it's valid
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
+      }
+      else
+      {
+        break;
+      }
+    }
+// -----------------------------------------------------
+```
+
+把这些 bug 全修完之后就顺利通过了测试。
+
+```
+$ symlinktest
+Start: test symlinks
+test symlinks: ok
+Start: test concurrent symlinks
+test concurrent symlinks: ok
+```
+
+### 完整函数
+
+最后贴一下完成函数， 我写了详细注释:
+
+#### sys_symlink
+
+```c
+// Create the path new as a link to the same inode as old.
+// This is SOFT LINK
+uint64
+sys_symlink(void)
+{
+  char new[MAXPATH], old[MAXPATH];
+  // "new" is the new file path
+  // "old" is the old file path
+  struct inode *ip;
+  // we will create a new inode for the link file
+  // and assign it to ip.
+
+  if(argstr(0, old, MAXPATH) < 0 || argstr(1, new, MAXPATH) < 0)
+  {
+    return -1;
+  }
+  // Get "old" and "new" from the argument
+
+  begin_op();
+  // Notice that we have to enclose every operation with file system
+  // to be inside begin_op and end_op
+  // to ensure crash safety
+
+  if((ip = namei(new)))
+  {
+    // This means this file name already exists
+    // Which leads to error state
+    end_op();
+    return -1;
+  }
+
+  
+
+  if((ip = create(new, T_SYMLINK, 0, 0)) == 0)
+  {
+    // Try to Create a new symbolic linked file
+    // If failed, [end_op] and return
+    // (Remember to end_op!! Otherwise this transaction will continue)
+    end_op();
+    return -1;
+  }
+  // ilock(ip);
+  // Notice !!!! create has already acquire the lock of this inode
+  // SO DO NOT acquire it again!!!
+
+  if(writei(ip, 0, (uint64)old, 0, MAXPATH) < 0)
+  {
+    // Use "writei" to write the old path to the first bytes inside the first block
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+
+  iunlockput(ip);
+  // Remember to use iunlockput to drop the refcnt and release the lock
+  // at the same time
+  end_op();
+
+  return 0;
+}
+```
+
+#### sys_open
+
+```c
+uint64
+sys_open(void)
+{
+  char path[MAXPATH];
+  int fd, omode;
+  struct file *f;
+  struct inode *ip;
+  int n;
+
+  argint(1, &omode);
+  if((n = argstr(0, path, MAXPATH)) < 0)
+    return -1;
+
+  begin_op();
+
+  if(omode & O_CREATE)
+  {
+    ip = create(path, T_FILE, 0, 0);
+    if(ip == 0)
+    {
+      end_op();
+      return -1;
+    }
+  } 
+  else 
+  {
+    if((ip = namei(path)) == 0)
+    {
+      // Get the inode pointer and check if it's valid
+      end_op();
+      return -1;
+    }
+
+    ilock(ip);
+    //lock the first ip
+
+    // Follow the symbolic link
+    int i;
+    // i represent the loop number
+    for(i = 0; i < 10; i++)
+    {
+      if(ip -> type == T_SYMLINK && !(omode & O_NOFOLLOW))
+      {
+        memset(path, 0, MAXPATH);
+        if(readi(ip, 0, (uint64)(path), 0, MAXPATH) <= 0)
+        {
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
+        // Modify the path to be the path represented by this soft link
+
+        iunlockput(ip);
+        // Notice!!! I have to unlock and put the former inode
+        // Before fetching the next inode!!!
+        // Otherwise it will lead to deadlock or unlock panic
+
+        if((ip = namei(path)) == 0)
+        {
+          // Get the inode pointer and check if it's valid
+          end_op();
+          return -1;
+        }
+
+        ilock(ip);
+        // Remeber to lock the branch new inode here!!
+      }
+      else
+      {
+        break;
+      }
+    }
+
+    // If ip is still symbolic link inode
+    // Then I assume it's cyclic
+    // then return -1
+    if(i == 10 && ip -> type == T_SYMLINK)
+    {
+      iunlockput(ip);
+      end_op();
+      //panic("Cyclic symbolic link");
+      return -1;
+    }
+    
+    // Cannot ope a directory without read only
+    if(ip->type == T_DIR && omode != O_RDONLY)
+    {
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
+  }
+
+  if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV))
+  {
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+
+  if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0)
+  {
+    if(f)
+      fileclose(f);
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+
+  if(ip->type == T_DEVICE)
+  {
+    f->type = FD_DEVICE;
+    f->major = ip->major;
+  } 
+  else 
+  {
+    f->type = FD_INODE;
+    f->off = 0;
+  }
+  f->ip = ip;
+  f->readable = !(omode & O_WRONLY);
+  f->writable = (omode & O_WRONLY) || (omode & O_RDWR);
+
+  if((omode & O_TRUNC) && ip -> type == T_FILE)
+  {
+    itrunc(ip);
+  }
+
+  iunlock(ip);
+  end_op();
+
+  return fd;
+}
+```
 
 

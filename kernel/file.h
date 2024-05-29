@@ -27,8 +27,6 @@ struct inode {
   int ref;            // Reference count
   struct sleeplock lock; // protects everything below here
   int valid;          // inode has been read from disk?
-  
-  char  sym_link_path;  // the path represented by the symbolic link (T_SYMLINK only)
   short type;         // copy of disk inode
   short major;
   short minor;

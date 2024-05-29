@@ -223,7 +223,6 @@ sys_symlink(void)
   // "new" is the new file path
   // "old" is the old file path
   struct inode *ip;
-  // dp is the pointer to the directory inode
   // we will create a new inode for the link file
   // and assign it to ip.
 
@@ -238,29 +237,39 @@ sys_symlink(void)
   // to be inside begin_op and end_op
   // to ensure crash safety
 
-  if((ip = create(new, T_SYMLINK, 0, 0)))
+  if((ip = namei(new)))
   {
+    // This means this file name already exists
+    // Which leads to error state
     end_op();
     return -1;
   }
 
-  strncpy(&(ip -> sym_link_path), old, MAXPATH);
+  
 
-  // Try to Create a new symbolic linked file
-  // If failed, [end_op] and return
-  // (Remember to end_op!! Otherwise this transaction will continue)
+  if((ip = create(new, T_SYMLINK, 0, 0)) == 0)
+  {
+    // Try to Create a new symbolic linked file
+    // If failed, [end_op] and return
+    // (Remember to end_op!! Otherwise this transaction will continue)
+    end_op();
+    return -1;
+  }
+  // ilock(ip);
+  // Notice !!!! create has already acquire the lock of this inode
+  // SO DO NOT acquire it again!!!
 
+  if(writei(ip, 0, (uint64)old, 0, MAXPATH) < 0)
+  {
+    // Use "writei" to write the old path to the first bytes inside the first block
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
 
-  ilock(ip);
-  // Acquire the sleep lock of this inode
-  // And read from disk to renew its value if needed
-
-  iupdate(ip);
-  // write back the inode in memory to disk
-  iunlock(ip);
-  // unlock the sleep lock
-  iput(ip);
-
+  iunlockput(ip);
+  // Remember to use iunlockput to drop the refcnt and release the lock
+  // at the same time
   end_op();
 
   return 0;
@@ -431,32 +440,57 @@ sys_open(void)
       return -1;
     }
 
+    ilock(ip);
+    //lock the first ip
+
     // Follow the symbolic link
-    for(int i = 0; i < 10; i++)
+    int i;
+    // i represent the loop number
+    for(i = 0; i < 10; i++)
     {
       if(ip -> type == T_SYMLINK && !(omode & O_NOFOLLOW))
       {
-        strncpy(path, &(ip -> sym_link_path), MAXPATH);
+        memset(path, 0, MAXPATH);
+        if(readi(ip, 0, (uint64)(path), 0, MAXPATH) <= 0)
+        {
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
         // Modify the path to be the path represented by this soft link
+
+        iunlockput(ip);
+        // Notice!!! I have to unlock and put the former inode
+        // Before fetching the next inode!!!
+        // Otherwise it will lead to deadlock or unlock panic
+
         if((ip = namei(path)) == 0)
         {
           // Get the inode pointer and check if it's valid
           end_op();
           return -1;
         }
+
+        ilock(ip);
+        // Remeber to lock the branch new inode here!!
+      }
+      else
+      {
+        break;
       }
     }
 
     // If ip is still symbolic link inode
     // Then I assume it's cyclic
-    // then panic and return
-    if(ip -> type == T_SYMLINK)
+    // then return -1
+    if(i == 10 && ip -> type == T_SYMLINK)
     {
-      panic("Cyclic symbolic link");
+      iunlockput(ip);
+      end_op();
+      //panic("Cyclic symbolic link");
       return -1;
     }
-
-    ilock(ip);
+    
     // Cannot ope a directory without read only
     if(ip->type == T_DIR && omode != O_RDONLY)
     {
