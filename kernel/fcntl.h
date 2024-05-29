@@ -14,5 +14,10 @@
 #define PROT_EXEC       0x4
 
 #define MAP_SHARED      0x01
+// MAP_SHARED means that modifications to the mapped memory should
+// Always be written back to file
+// It's OK if process that map the same MAP_SHARED files DO NOT
+// shared physical pages
 #define MAP_PRIVATE     0x02
+// MAP_PRIVATE means that we should not write back on modifying
 #endif
