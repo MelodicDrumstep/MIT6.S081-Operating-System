@@ -16,6 +16,8 @@
 #include "file.h"
 #include "fcntl.h"
 
+#define DEBUG
+
 static struct inode*
 create(char *path, short type, short major, short minor);
 
@@ -758,5 +760,116 @@ sys_mmap(void)
 uint64 
 sys_munmap(void)
 {
+  struct proc * my_proc = myproc();
+
+  // int munmap(void *addr, size_t length);
+
+  uint64 addr;
+  int length;
+  // parsing the argument
+  argaddr(0, &addr);
+  argint(1, &length);
+
+  uint64 end = addr + length;
+  // "end" represent the end position of unmap block
+
+  struct vma * pointer_to_vma;
+
+  int has_found = 0;
+
+  int match_start;
+  int match_end;
+  int vma_start;
+  int vma_end;
+  // Used in matching
+
+  for(int i = 0; i < MAX_VMA; i++)
+  {
+    pointer_to_vma = &(my_proc -> vma[i]);
+    if(pointer_to_vma -> used == 0)
+    {
+      continue;
+    }
+
+    vma_start = pointer_to_vma -> starting_addr;
+    match_start = (addr == vma_start);    
+    // Match the start
+    vma_end = pointer_to_vma -> starting_addr + pointer_to_vma -> length;
+    match_end = (end == vma_end);
+    // Match the end
+
+    if((match_start || match_end) && (addr >= vma_start) && (end <= vma_end))
+    {
+      has_found = 1;
+
+      // DEBUGING
+      #ifdef DEBUG
+       printf("i is : %d, match_start : %d, match_end : %d\n", i, match_start, match_end);
+      #endif
+      // DEBUGING
+
+      break;
+    }
+  }
+
+  if(has_found == 0)
+  {
+    return -1;
+  }
+
+  addr = PGROUNDDOWN(addr);
+  length = PGROUNDUP(length);
+  // ROUND addr and length
+
+  //uvmunmap(my_proc -> pagetable, addr, length / PGSIZE, 1);
+
+  for(int unmap_addr = addr; unmap_addr < addr + length; unmap_addr += PGSIZE)
+  {
+    if(walkaddr(my_proc -> pagetable, unmap_addr))
+    {
+      // walkaddr will return the physical address corresponding to 
+      // vitual address "unmap_addr"
+      // if it's 0, then it's unmapped
+      // And I should NOT write to file or unmap the mapping if it's 0
+
+
+      // DEBUGING
+      #ifdef DEBUG
+        printf("walkaddr:%d\n", walkaddr(my_proc -> pagetable, unmap_addr));
+      #endif
+      // DEBUGING
+
+      uvmunmap(my_proc -> pagetable, unmap_addr, 1, 1);
+      // unmap one page at a time
+
+      if(pointer_to_vma -> flags & MAP_SHARED)
+      {
+        if(filewrite(pointer_to_vma -> vma_file, unmap_addr, PGSIZE) < 0)
+        {
+          return -1;
+        }
+      }
+    }
+  }
+
+
+  if(match_start && match_end)
+  {
+    // If I unmap the whole memory block
+    // release the vma
+    pointer_to_vma -> used = 0;
+    fileclose(pointer_to_vma -> vma_file);
+    // remember to drop the refcnt of the file
+  }
+  // and modify the vma in other cases
+  else if(match_start)
+  {
+    pointer_to_vma -> starting_addr += length;
+    pointer_to_vma -> length -= length;
+  }
+  else
+  {
+    pointer_to_vma -> length -= length;
+  }
   return 0;
 }

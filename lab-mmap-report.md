@@ -327,5 +327,290 @@ usertrap(void)
 
 所以我们 `usertrap` 里面可以直接用 `myproc()` 函数拿到发生 `page fault` 的进程的 `process control block`.
 
+我一开始实现成了这样:
+
+```c
+  else if(r_scause() == 13 || r_scause() == 15)
+  {
+    uint64 va = r_stval();
+    // Notice that now we are in user mode
+    // myproc() will return the process causing
+
+    int have_found = 0;
+    struct vma * pointer_to_vma;
+    int i;
+    for(i = 0; i < MAX_VMA; i++)
+    {
+      // Search every vma inside this process to find the vma which this page 
+      // belongs to
+      pointer_to_vma = &(p -> vma[i]);
+      if(pointer_to_vma -> used == 0)
+      {
+        continue;
+      }
+      if(va >= pointer_to_vma -> starting_addr && 
+         va < pointer_to_vma -> starting_addr + pointer_to_vma -> length)
+      {
+        // Check if va is inside the range of some vma
+        // (We can view a vma mapping to a "memory block")
+        have_found = 1;
+        break;
+      }
+    }
+
+    if(have_found == 0)
+    {
+      panic("Page fault but cannot find vma corresponding to it");
+    }
+
+    struct inode * ip = pointer_to_vma -> vma_file -> ip;
+    // Get the inode pointer of this file because I need to read the data
+    // of the first 4KB
+
+    va = PGROUNDDOWN(va);
+    uint64 pa;
+    if((pa = (uint64)kalloc()) == 0)
+    {
+      panic("No available resouces to alloc");
+    }
+    // alloc the physical space
+    // Now I haven't create any mapping in the page table
+
+    memset((void * )pa, 0, PGSIZE);
+    // initialization
+
+    begin_op();
+    // Remember to enclose every operation with inode
+    // inside begin_op and end_op
+    ilock(ip);
+
+    uint64 read_file_offset = pointer_to_vma -> offset + (va - pointer_to_vma -> starting_addr);
+    // I should read the first 4KB w.r.t va
+    // So the starting point would be (va - addr_file) + offset
+
+    if(readi(ip, 0, (uint64)pa, read_file_offset, PGSIZE) < 0)
+    {
+      // Read the data into pa
+      iunlockput(ip);
+      end_op();
+      panic("can not read from the file");
+    }
+
+    iunlockput(ip);
+    end_op();
+
+    // Now set the PTE flags according to the 
+    // vma flags
+    // Notice that we manage the permission
+    // by use of PTE flags (page wide permission)
+    int flags = 0;
+    if(pointer_to_vma -> prot & PROT_READ)
+    {
+      flags |= PTE_R;
+    }
+    if(pointer_to_vma -> prot & PROT_WRITE)
+    {
+      flags |= PTE_W;
+    }
+    if(pointer_to_vma -> prot & PROT_EXEC)
+    {
+      flags |= PTE_X;
+    }
+    flags |= PTE_U;
+    // Let the user access this page
+
+    // Create page table mapping
+    if(mappages(p -> pagetable, va, PGSIZE, (uint64)pa, flags) < 0)
+    {
+      kfree((void * )pa);
+      panic("Mapping failed");
+    }
+  }
+  ```
+
+  看起来没什么问题， 但是运行 `mmaptest` 会出现一个奇怪的 `panic inode`：
+
+  ```
+  $ mmaptest
+mmap_test starting
+test mmap f
+panic: ilock
+backtrace:
+0x0000000080006c8c
+0x0000000080003716
+0x0000000080002284
+QEMU: Terminated
+```
+
+debug 后发现是 `inode.refcnt == 0` 引起的 panic. 所以， 我是什么时候引起了 `recnt` 变成了 0 呢？
+
+原因出在这里:
+
+```c
+    uint64 read_file_offset = pointer_to_vma -> offset + (va - pointer_to_vma -> starting_addr);
+    // I should read the first 4KB w.r.t va
+    // So the starting point would be (va - addr_file) + offset
+
+    if(readi(ip, 0, (uint64)pa, read_file_offset, PGSIZE) < 0)
+    {
+      // Read the data into pa
+      iunlockput(ip);
+      end_op();
+      panic("can not read from the file");
+    }
+
+    // iunlockput(ip);
+    // At here, DO NOT use iput to drop a refcnt!!!
+    // Because this inode is using along the mmap block
+    // Then I should hold the refcnt along the mmap block
+    iunlock(ip);
+    end_op();
+```
+
+我这里不能 `iput`!!! 不然就释放了那个 `refcnt` 了。 这里只能 `iunlock` 释放锁， 不要调用 `iunlockput`.
+
+修改完之后再运行， 可以发现过了许多测试。 
+
+```c
+$ mmaptest
+mmap_test starting
+test mmap f
+test mmap f: OK
+test mmap private
+test mmap private: OK
+test mmap read-only
+test mmap read-only: OK
+test mmap read/write
+test mmap read/write: OK
+test mmap dirty
+mmaptest: mmap_test failed: file does not contain modifications, pid=3
+panic: uvmunmap: not mapped
+backtrace:
+0x0000000080006c8c
+0x00000000800009ce
+0x0000000080000c56
+0x00000000800012a2
+0x00000000800012ea
+```
+
+接下来来实现 `munmap`.
+
+## munmap
+
+我最开始写成了这样:
+
+```c
+uint64 
+sys_munmap(void)
+{
+  struct proc * my_proc = myproc();
+
+  // int munmap(void *addr, size_t length);
+
+  uint64 addr;
+  int length;
+  // parsing the argument
+  argaddr(0, &addr);
+  argint(1, &length);
+
+  uint64 end = addr + length;
+  // "end" represent the end position of unmap block
+
+  struct vma * pointer_to_vma;
+
+  int has_found = 0;
+
+  int match_start;
+  int match_end;
+  int vma_start;
+  int vma_end;
+  // Used in matching
+
+  for(int i = 0; i < MAX_VMA; i++)
+  {
+    pointer_to_vma = &(my_proc -> vma[i]);
+    if(pointer_to_vma -> used == 0)
+    {
+      continue;
+    }
+
+    vma_start = pointer_to_vma -> starting_addr;
+    match_start = (addr == vma_start);    
+    // Match the start
+    vma_end = pointer_to_vma -> starting_addr + pointer_to_vma -> length;
+    match_end = (end == vma_end);
+    // Match the end
+
+    if((match_start || match_end) && (addr >= vma_start) && (end <= vma_end))
+    {
+      has_found = 1;
+
+      // DEBUGING
+      #ifdef DEBUG
+       printf("i is : %d, match_start : %d, match_end : %d\n", i, match_start, match_end);
+      #endif
+      // DEBUGING
+
+      break;
+    }
+  }
+
+  if(has_found == 0)
+  {
+    return -1;
+  }
+
+  addr = PGROUNDDOWN(addr);
+  length = PGROUNDUP(length);
+  // ROUND addr and length
+
+  if(pointer_to_vma -> flags & MAP_SHARED)
+  {
+    if(filewrite(pointer_to_vma -> vma_file, unmap_addr, PGSIZE) < 0)
+    {
+      return -1;
+    }
+  }
+
+  uvmunmap(my_proc -> pagetable, unmap_addr, 1, 1);
+  // unmap one page at a time
 
 
+  if(match_start && match_end)
+  {
+    // If I unmap the whole memory block
+    // release the vma
+    pointer_to_vma -> used = 0;
+    fileclose(pointer_to_vma -> vma_file);
+    // remember to drop the refcnt of the file
+  }
+  // and modify the vma in other cases
+  else if(match_start)
+  {
+    pointer_to_vma -> starting_addr += length;
+    pointer_to_vma -> length -= length;
+  }
+  else
+  {
+    pointer_to_vma -> length -= length;
+  }
+  return 0;
+}
+```
+
+这样无法通过 `test not-mapped unmap`
+
+```
+panic: uvmunmap: not mapped
+backtrace:
+0x0000000080006e6c
+0x00000000800009ce
+0x0000000080000c56
+0x00000000800012a2
+0x00000000800012ea
+0x0000000080001ca8
+```
+
+为什么会这样？ 这是因为这次 `unmap` 的那些 `page` 根本没有被访问过， 也就没有被分配。 那我 `uvmunmap` 它们， 或者读取它们的数据写入文件， 就自然会崩溃了。
+
+```c

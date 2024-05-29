@@ -9,6 +9,8 @@
 #include "struct_file.h"
 #include "struct_inode.h"
 
+//#define DEBUG
+
 struct spinlock tickslock;
 uint ticks;
 
@@ -84,7 +86,8 @@ usertrap(void)
 
     int have_found = 0;
     struct vma * pointer_to_vma;
-    for(int i = 0; i < MAX_VMA; i++)
+    int i;
+    for(i = 0; i < MAX_VMA; i++)
     {
       // Search every vma inside this process to find the vma which this page 
       // belongs to
@@ -108,8 +111,13 @@ usertrap(void)
       panic("Page fault but cannot find vma corresponding to it");
     }
 
+    // DEBUGING 
+    #ifdef DEBUG
+      printf("index number is: %d\n", i);
+    #endif
+    // DEBUGING
+
     struct inode * ip = pointer_to_vma -> vma_file -> ip;
-    
     // Get the inode pointer of this file because I need to read the data
     // of the first 4KB
 
@@ -123,8 +131,18 @@ usertrap(void)
     // Now I haven't create any mapping in the page table
 
     memset((void * )pa, 0, PGSIZE);
+    // initialization
 
     begin_op();
+    // Remember to enclose every operation with inode
+    // inside begin_op and end_op
+
+    // DEBUGING 
+    #ifdef DEBUG
+      printf("ip -> refcnt : %d\n", ip -> ref);
+    #endif
+    // DEBUGING
+
     ilock(ip);
 
     uint64 read_file_offset = pointer_to_vma -> offset + (va - pointer_to_vma -> starting_addr);
@@ -133,12 +151,17 @@ usertrap(void)
 
     if(readi(ip, 0, (uint64)pa, read_file_offset, PGSIZE) < 0)
     {
+      // Read the data into pa
       iunlockput(ip);
       end_op();
       panic("can not read from the file");
     }
 
-    iunlockput(ip);
+    // iunlockput(ip);
+    // At here, DO NOT use iput to drop a refcnt!!!
+    // Because this inode is using along the mmap block
+    // Then I should hold the refcnt along the mmap block
+    iunlock(ip);
     end_op();
 
     // Now set the PTE flags according to the 
@@ -161,12 +184,12 @@ usertrap(void)
     flags |= PTE_U;
     // Let the user access this page
 
+    // Create page table mapping
     if(mappages(p -> pagetable, va, PGSIZE, (uint64)pa, flags) < 0)
     {
       kfree((void * )pa);
       panic("Mapping failed");
     }
-  
   }
 
   else 
