@@ -1,8 +1,14 @@
+#ifndef PROC_H
+#define PROC_H
+
+#include "defs.h"
+
 #define MAX_VMA 16
 
 // Saved registers for kernel context switches.
 struct context {
   uint64 ra;
+
   uint64 sp;
 
   // callee-saved
@@ -93,7 +99,7 @@ struct vma
   char filename[MAXPATH];
   int fd;
   int offset;
-  struct file * file;
+  struct file * vma_file;
   // one vma deals with one "mmap"
   // It will record the starting address, length of this memory block
   // the permissions, and the backup file name & file descriptor & file offset
@@ -148,3 +154,5 @@ struct proc
 
   int a0; // store the a0 register value
 };
+
+#endif

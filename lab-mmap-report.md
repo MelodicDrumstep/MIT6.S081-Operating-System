@@ -124,9 +124,11 @@ struct vma
   char filename[MAXPATH];
   int fd;
   int offset;
+  struct file * vma_file;
   // one vma deals with one "mmap"
   // It will record the starting address, length of this memory block
   // the permissions, and the backup file name & file descriptor & file offset
+  // & file control block pointer
   // used detect whether this vma is being used
   // this is for allocate new valid vma
 };
@@ -152,7 +154,28 @@ for(int i = 0; i < MAX_VMA; i++)
 
 ## mmap
 
-然后开始写 `mmap`. 大致思路就是， 寻找空闲 `VMA`, 做安全检查， 然后填充 `VMA`. 这里不使用用户提供的 `addr suggestion`, 直接分配在线程使用的最大空间之后。
+然后开始写 `mmap`. 大致思路就是， 寻找空闲 `VMA`, 做安全检查， 然后填充 `VMA`. 这里不使用用户提供的 `addr suggestion`, 直接分配在进程使用的最大空间之后。
+
+这个有一个问题是：我把这部分内存块映射到虚拟内存的哪个位置？ 
+
+我们可以从 `kernel/memlayout.h` 中看到 xv6 的虚拟内存布局:
+
+```
+// User memory layout.
+// Address zero first:
+//   text
+//   original data and bss
+//   fixed-size stack
+//   expandable heap
+//   ...
+//   USYSCALL (shared with kernel)
+//   TRAPFRAME (p->trapframe, used by the trampoline)
+//   TRAMPOLINE (the same page as in the kernel)
+```
+
+通常情况下, 我们应该把 `mmap` 区域放在一个进程的堆和栈之间， 但是这里我们的进程没有维护便利的数据结构来找到栈和堆之间满足一定大小的一块内存空间。 所以这里我这样实现: 直接把这块内存空间接在当前进程使用的最大地址 (虚拟地址) 的后面。 这样可能会产生碎片， 但安全性得到了保障。
+
+所以就这样实现:
 
 ```c
 uint64 
@@ -217,7 +240,7 @@ sys_mmap(void)
   pointer_to_current_vma -> prot = prot;
   pointer_to_current_vma -> flags = flags;
   pointer_to_current_vma -> fd = fd;
-  pointer_to_current_vma -> file = file;
+  pointer_to_current_vma -> vma_file = file;
   pointer_to_current_vma -> offset = offset;
 
   my_proc -> sz += length;
@@ -249,4 +272,60 @@ backtrace:
 ```
 
 接下来需要写 page fault 的 handler.
+
+## page fault handler
+
+大致就是改写 `kernel/trap.c` 里的 `usertrap`. 我们在 `cow lab` 中可以改写过一次关于 `page fault` 的 handler 了。 这里和之前的类似。
+
+首先需要注意一点: 当我们引发 `page fault`, 进入 `usertrap` 函数的时候， 我们还处于 __用户态__. 
+
+```c
+//
+// handle an interrupt, exception, or system call from user space.
+// called from trampoline.S
+//
+void
+usertrap(void)
+{
+  int which_dev = 0;
+
+  if((r_sstatus() & SSTATUS_SPP) != 0)
+    panic("usertrap: not from user mode");
+
+  // send interrupts and exceptions to kerneltrap(),
+  // since we're now in the kernel.
+  w_stvec((uint64)kernelvec);
+
+  struct proc *p = myproc();
+  
+  // save user program counter.
+  p->trapframe->epc = r_sepc();
+  
+  if(r_scause() == 8)
+  {
+    // system call
+
+    if(killed(p))
+      exit(-1);
+
+    // sepc points to the ecall instruction,
+    // but we want to return to the next instruction.
+    p->trapframe->epc += 4;
+
+    // an interrupt will change sepc, scause, and sstatus,
+    // so enable only now that we're done with those registers.
+    intr_on();
+
+    syscall();
+    
+  } 
+  //...
+}
+```
+
+比如上方这段处理系统调用的 `usertrap`, 我们是在用户态发生 `trap (syscall / interrupt / exception)`, 然后 `usertrap` 获取必要的信息， 再进入内核态进程执行系统调用。
+
+所以我们 `usertrap` 里面可以直接用 `myproc()` 函数拿到发生 `page fault` 的进程的 `process control block`.
+
+
 

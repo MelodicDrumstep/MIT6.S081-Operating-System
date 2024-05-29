@@ -5,6 +5,8 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
+#include "struct_file.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -50,7 +52,8 @@ usertrap(void)
   // save user program counter.
   p->trapframe->epc = r_sepc();
   
-  if(r_scause() == 8){
+  if(r_scause() == 8)
+  {
     // system call
 
     if(killed(p))
@@ -66,9 +69,102 @@ usertrap(void)
 
     syscall();
     
-  } else if((which_dev = devintr()) != 0){
+  } 
+  else if((which_dev = devintr()) != 0)
+  {
     // ok
-  } else {
+  } 
+
+  else if(r_scause() == 13 || r_scause() == 15)
+  {
+    uint64 va = r_stval();
+    // Notice that now we are in user mode
+    // myproc() will return the process causing
+
+    int have_found = 0;
+    struct vma * pointer_to_vma;
+    for(int i = 0; i < MAX_VMA; i++)
+    {
+      // Search every vma inside this process to find the vma which this page 
+      // belongs to
+      pointer_to_vma = &(p -> vma[i]);
+      if(pointer_to_vma -> used == 0)
+      {
+        continue;
+      }
+      if(va >= pointer_to_vma -> starting_addr && 
+         va < pointer_to_vma -> starting_addr + pointer_to_vma -> length)
+      {
+        // Check if va is inside the range of some vma
+        // (We can view a vma mapping to a "memory block")
+        have_found = 1;
+        break;
+      }
+    }
+
+    if(have_found == 0)
+    {
+      panic("Page fault but cannot find vma corresponding to it");
+    }
+
+    struct inode * ip = pointer_to_vma -> vma_file -> ip;
+    // Get the inode pointer of this file because I need to read the data
+    // of the first 4KB
+
+    va = PGROUNDDOWN(va);
+    uint64 pa;
+    if((pa = (uint64)kalloc()) == 0)
+    {
+      panic("No available resouces to alloc");
+    }
+    // alloc the physical space
+    // Now I haven't create any mapping in the page table
+
+    memset((void * )pa, 0, PGSIZE);
+    ilock(ip);
+
+    uint64 read_file_offset = pointer_to_vma -> offset + (va - pointer_to_vma -> starting_addr);
+    // I should read the first 4KB w.r.t va
+    // So the starting point would be (va - addr_file) + offset
+
+    if(readi(ip, 0, pa, read_file_offset, PGSIZE) < 0)
+    {
+      iunlockput(ip);
+      panic("can not read from the file");
+    }
+
+    iunlockput(ip);
+
+    // Now set the PTE flags according to the 
+    // vma flags
+    // Notice that we manage the permission
+    // by use of PTE flags (page wide permission)
+    int flags = 0;
+    if(pointer_to_vma -> prot & PROT_READ)
+    {
+      flags |= PTE_R;
+    }
+    if(pointer_to_vma -> prot & PROT_WRITE)
+    {
+      flags |= PTE_W;
+    }
+    if(pointer_to_vma -> prot & PROT_EXEC)
+    {
+      flags |= PTE_X;
+    }
+    flags |= PTE_U;
+    // Let the user access this page
+
+    if(mappages(p -> pagetable, va, PGSIZE, pa, flags) < 0)
+    {
+      kfree((void * )pa);
+      panic("Mapping failed");
+    }
+  
+  }
+
+  else 
+  {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     setkilled(p);

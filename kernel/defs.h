@@ -1,3 +1,6 @@
+#ifndef DEFS_H
+#define DEFS_H
+
 #ifdef LAB_MMAP
 typedef unsigned long size_t;
 typedef long int off_t;
@@ -12,6 +15,7 @@ struct spinlock;
 struct sleeplock;
 struct stat;
 struct superblock;
+struct vma;
 #ifdef LAB_NET
 struct mbuf;
 struct sock;
@@ -244,4 +248,6 @@ void            sockclose(struct sock *);
 int             sockread(struct sock *, uint64, int);
 int             sockwrite(struct sock *, uint64, int);
 void            sockrecvudp(struct mbuf*, uint32, uint16, uint16);
+#endif
+
 #endif

@@ -697,7 +697,7 @@ sys_mmap(void)
   if(has_allocated == 0)
   {
     panic("No available vma!");
-    return -1;
+    return 0xffffffffffffffff;
   }
 
   //char * mmap(void *addr, size_t length, int prot, int flags,
@@ -723,10 +723,14 @@ sys_mmap(void)
   // the process size add length will exceed MAXVA (the maximum of virtual address)
   || (!file -> readable && (prot & PROT_READ))
   // file is not readable and prot require READ
-  || ((!file -> writable && (prot & PROT_WRITE)) && (flags == MAP_SHARED)))
+  || ((!file -> writable && (prot & PROT_WRITE)) && (flags == MAP_SHARED))
   // file is not writable , prot require WRITE and it's shared mapping (must be write back)
+  || (fd < 0 || fd >= NOFILE)
+  // file descriptor should be [0, NOFILE - 1]
+  || (file != my_proc -> ofile[fd]))
+  // file should be the same as ofile[fd]
   {
-    return -1;
+    return 0xffffffffffffffff;
   }
 
   // Fill in the vma
@@ -737,7 +741,7 @@ sys_mmap(void)
   pointer_to_current_vma -> prot = prot;
   pointer_to_current_vma -> flags = flags;
   pointer_to_current_vma -> fd = fd;
-  pointer_to_current_vma -> file = file;
+  pointer_to_current_vma -> vma_file = file;
   pointer_to_current_vma -> offset = offset;
 
   my_proc -> sz += length;
