@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
 
 struct cpu cpus[NCPU];
 
@@ -348,12 +349,14 @@ fork(void)
   struct proc *p = myproc();
 
   // Allocate process.
-  if((np = allocproc()) == 0){
+  if((np = allocproc()) == 0)
+  {
     return -1;
   }
 
   // Copy user memory from parent to child.
-  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
+  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0)
+  {
     freeproc(np);
     release(&np->lock);
     return -1;
@@ -372,8 +375,12 @@ fork(void)
 
   // increment reference counts on open file descriptors.
   for(i = 0; i < NOFILE; i++)
+  {
     if(p->ofile[i])
+    {
       np->ofile[i] = filedup(p->ofile[i]);
+    }
+  }
   np->cwd = idup(p->cwd);
 
   safestrcpy(np->name, p->name, sizeof(p->name));
@@ -418,6 +425,50 @@ exit(int status)
 
   if(p == initproc)
     panic("init exiting");
+
+  // unmap the previous mmap fields
+  // Just as if munmap has been called
+  struct vma * pointer_to_vma;
+  for(int i = 0; i < MAX_VMA; i++)
+  {
+    pointer_to_vma = &(p -> vma[i]);
+    if(pointer_to_vma -> used == 0)
+    {
+      continue;
+    }
+    uint64 addr = pointer_to_vma -> starting_addr;
+    int length = pointer_to_vma -> length;
+
+    addr = PGROUNDDOWN(addr);
+    length = PGROUNDUP(length);
+    // ROUND addr and length
+
+    for(int unmap_addr = addr; unmap_addr < addr + length; unmap_addr += PGSIZE)
+    {
+      if(walkaddr(p -> pagetable, unmap_addr))
+      {
+        // walkaddr will return the physical address corresponding to 
+        // vitual address "unmap_addr"
+        // if it's 0, then it's unmapped
+        // And I should NOT write to file or unmap the mapping if it's 0
+
+        // Check if I need to write back to the file
+        // Notice !! This must happen before doing the "uvmunmap"
+        if(pointer_to_vma -> flags & MAP_SHARED)
+        {
+          if(filewrite(pointer_to_vma -> vma_file, unmap_addr, PGSIZE) < 0)
+          {
+            return;
+          }
+        }
+        uvmunmap(p -> pagetable, unmap_addr, 1, 1);
+        // unmap one page at a time
+      }
+    }
+    pointer_to_vma -> used = 0;
+  }
+
+
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){

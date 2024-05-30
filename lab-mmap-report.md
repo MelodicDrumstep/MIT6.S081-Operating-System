@@ -748,3 +748,77 @@ backtrace:
 0x0000000080006e2c
 0x0000000080000cf2
 ```
+
+## modify exit
+
+接下来修改以下 `exit` 系统调用， 退出之前把之前 `mmap` 的内存清理掉 (这样物理内存可以重新空闲出来):
+
+```c
+// Exit the current process.  Does not return.
+// An exited process remains in the zombie state
+// until its parent calls wait().
+void
+exit(int status)
+{
+  struct proc *p = myproc();
+
+  if(p == initproc)
+    panic("init exiting");
+
+  // unmap the previous mmap fields
+  // Just as if munmap has been called
+  struct vma * pointer_to_vma;
+  for(int i = 0; i < MAX_VMA; i++)
+  {
+    pointer_to_vma = &(p -> vma[i]);
+    if(pointer_to_vma -> used == 0)
+    {
+      continue;
+    }
+    uint64 addr = pointer_to_vma -> starting_addr;
+    int length = pointer_to_vma -> length;
+
+    addr = PGROUNDDOWN(addr);
+    length = PGROUNDUP(length);
+    // ROUND addr and length
+
+    for(int unmap_addr = addr; unmap_addr < addr + length; unmap_addr += PGSIZE)
+    {
+      if(walkaddr(p -> pagetable, unmap_addr))
+      {
+        // walkaddr will return the physical address corresponding to 
+        // vitual address "unmap_addr"
+        // if it's 0, then it's unmapped
+        // And I should NOT write to file or unmap the mapping if it's 0
+
+        // Check if I need to write back to the file
+        // Notice !! This must happen before doing the "uvmunmap"
+        if(pointer_to_vma -> flags & MAP_SHARED)
+        {
+          if(filewrite(pointer_to_vma -> vma_file, unmap_addr, PGSIZE) < 0)
+          {
+            return;
+          }
+        }
+        uvmunmap(p -> pagetable, unmap_addr, 1, 1);
+        // unmap one page at a time
+      }
+    }
+    pointer_to_vma -> used = 0;
+  }
+
+  // Close all open files.
+  for(int fd = 0; fd < NOFILE; fd++){
+    if(p->ofile[fd]){
+      struct file *f = p->ofile[fd];
+      fileclose(f);
+      p->ofile[fd] = 0;
+    }
+  }
+  //...
+}
+```
+
+
+## modify fork
+
