@@ -357,8 +357,7 @@ fork(void)
 
   struct vma * pointer_to_vma_p;
   struct vma * pointer_to_vma_np;
-  // Copy the vma array
-
+  // Just Copy the vma array
   for(int i = 0; i < MAX_VMA; i++)
   {
     pointer_to_vma_np = &(np -> vma[i]);
