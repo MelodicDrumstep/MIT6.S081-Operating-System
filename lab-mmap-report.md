@@ -613,4 +613,138 @@ backtrace:
 
 为什么会这样？ 这是因为这次 `unmap` 的那些 `page` 根本没有被访问过， 也就没有被分配。 那我 `uvmunmap` 它们， 或者读取它们的数据写入文件， 就自然会崩溃了。
 
+所以， 我需要按 `page` 的颗粒度进行 `uvmunmap`: 对于每个 `page`, 我检查页表项的 `PTE_V` 来判断它是否被映射 (这个可以通过 `walkaddr` 的返回值实现)， 如果被映射， 我先检查是否要写回文件 (即是不是 `MAP_SHARED` )， 然后调用 `uvmunmap`, 否则什么都不做。 
+
+所以我实现成了这样 (我写了很详细的注释):
+
 ```c
+uint64 
+sys_munmap(void)
+{
+  struct proc * my_proc = myproc();
+
+  // int munmap(void *addr, size_t length);
+
+  uint64 addr;
+  int length;
+  // parsing the argument
+  argaddr(0, &addr);
+  argint(1, &length);
+
+  uint64 end = addr + length;
+  // "end" represent the end position of unmap block
+
+  struct vma * pointer_to_vma;
+
+  int has_found = 0;
+
+  int match_start;
+  int match_end;
+  int vma_start;
+  int vma_end;
+  // Used in matching
+
+  for(int i = 0; i < MAX_VMA; i++)
+  {
+    pointer_to_vma = &(my_proc -> vma[i]);
+    if(pointer_to_vma -> used == 0)
+    {
+      continue;
+    }
+
+    vma_start = pointer_to_vma -> starting_addr;
+    match_start = (addr == vma_start);    
+    // Match the start
+    vma_end = pointer_to_vma -> starting_addr + pointer_to_vma -> length;
+    match_end = (end == vma_end);
+    // Match the end
+
+    if((match_start || match_end) && (addr >= vma_start) && (end <= vma_end))
+    {
+      has_found = 1;
+      break;
+    }
+  }
+
+  if(has_found == 0)
+  {
+    return -1;
+  }
+
+  addr = PGROUNDDOWN(addr);
+  length = PGROUNDUP(length);
+  // ROUND addr and length
+
+  for(int unmap_addr = addr; unmap_addr < addr + length; unmap_addr += PGSIZE)
+  {
+    if(walkaddr(my_proc -> pagetable, unmap_addr))
+    {
+      // walkaddr will return the physical address corresponding to 
+      // vitual address "unmap_addr"
+      // if it's 0, then it's unmapped
+      // And I should NOT write to file or unmap the mapping if it's 0
+
+      // Check if I need to write back to the file
+      // Notice !! This must happen before doing the "uvmunmap"
+      if(pointer_to_vma -> flags & MAP_SHARED)
+      {
+        if(filewrite(pointer_to_vma -> vma_file, unmap_addr, PGSIZE) < 0)
+        {
+          return -1;
+        }
+      }
+
+      uvmunmap(my_proc -> pagetable, unmap_addr, 1, 1);
+      // unmap one page at a time
+    }
+  }
+
+  if(match_start && match_end)
+  {
+    // If I unmap the whole memory block
+    // release the vma
+    pointer_to_vma -> used = 0;
+    fileclose(pointer_to_vma -> vma_file);
+    // remember to drop the refcnt of the file
+  }
+  // and modify the vma in other cases
+  else if(match_start)
+  {
+    pointer_to_vma -> starting_addr += length;
+    pointer_to_vma -> length -= length;
+  }
+  else
+  {
+    pointer_to_vma -> length -= length;
+  }
+  return 0;
+}
+
+```
+
+现在终于过了 `munmap` 的测试:
+
+```
+$ mmaptest
+mmap_test starting
+test mmap f
+test mmap f: OK
+test mmap private
+test mmap private: OK
+test mmap read-only
+test mmap read-only: OK
+test mmap read/write
+test mmap read/write: OK
+test mmap dirty
+test mmap dirty: OK
+test not-mapped unmap
+test not-mapped unmap: OK
+test mmap two files
+test mmap two files: OK
+mmap_test: ALL OK
+fork_test starting
+panic: uvmcopy: page not present
+backtrace:
+0x0000000080006e2c
+0x0000000080000cf2
+```

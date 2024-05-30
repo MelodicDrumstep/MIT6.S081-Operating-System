@@ -16,7 +16,7 @@
 #include "file.h"
 #include "fcntl.h"
 
-#define DEBUG
+//#define DEBUG
 
 static struct inode*
 create(char *path, short type, short major, short minor);
@@ -821,8 +821,6 @@ sys_munmap(void)
   length = PGROUNDUP(length);
   // ROUND addr and length
 
-  //uvmunmap(my_proc -> pagetable, addr, length / PGSIZE, 1);
-
   for(int unmap_addr = addr; unmap_addr < addr + length; unmap_addr += PGSIZE)
   {
     if(walkaddr(my_proc -> pagetable, unmap_addr))
@@ -839,9 +837,8 @@ sys_munmap(void)
       #endif
       // DEBUGING
 
-      uvmunmap(my_proc -> pagetable, unmap_addr, 1, 1);
-      // unmap one page at a time
-
+      // Check if I need to write back to the file
+      // Notice !! This must happen before doing the "uvmunmap"
       if(pointer_to_vma -> flags & MAP_SHARED)
       {
         if(filewrite(pointer_to_vma -> vma_file, unmap_addr, PGSIZE) < 0)
@@ -849,9 +846,11 @@ sys_munmap(void)
           return -1;
         }
       }
+
+      uvmunmap(my_proc -> pagetable, unmap_addr, 1, 1);
+      // unmap one page at a time
     }
   }
-
 
   if(match_start && match_end)
   {
