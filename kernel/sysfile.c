@@ -16,7 +16,7 @@
 #include "file.h"
 #include "fcntl.h"
 
-//#define DEBUG
+// #define DEBUG
 
 static struct inode*
 create(char *path, short type, short major, short minor);
@@ -814,6 +814,13 @@ sys_munmap(void)
 
   if(has_found == 0)
   {
+
+    // DEBUGING
+    #ifdef DEBUG
+     printf("cannot find any available vma\n");
+    #endif
+    // DEBUGING
+
     return -1;
   }
 
@@ -839,10 +846,20 @@ sys_munmap(void)
 
       // Check if I need to write back to the file
       // Notice !! This must happen before doing the "uvmunmap"
-      if(pointer_to_vma -> flags & MAP_SHARED)
+      if((pointer_to_vma -> flags & MAP_SHARED)
+       && (pointer_to_vma -> prot & PROT_WRITE) 
+       && (pointer_to_vma -> vma_file -> writable))
+       // Notice!! I also have to ensure that the file is writable to me
       {
         if(filewrite(pointer_to_vma -> vma_file, unmap_addr, PGSIZE) < 0)
         {
+          
+          // DEBUGING
+          #ifdef DEBUG
+          printf("write file failure\n");
+          #endif
+          // DEBUGING
+
           return -1;
         }
       }

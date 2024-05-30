@@ -36,6 +36,7 @@ err(char *why)
 void
 _v1(char *p)
 {
+  //printf("inside _v1 test, check the content of the two mapped pages\n");
   int i;
   for (i = 0; i < PGSIZE*2; i++) {
     if (i < PGSIZE + (PGSIZE/2)) {
@@ -49,7 +50,8 @@ _v1(char *p)
         err("v1 mismatch (2)");
       }
     }
-  }
+  } 
+  //printf("outside _v1 test\n");
 }
 
 //
@@ -281,10 +283,26 @@ fork_test(void)
 
   if((pid = fork()) < 0)
     err("fork");
-  if (pid == 0) {
+
+  // if (pid != 0) 
+  // {
+  //   _v1(p1);
+  //   if (munmap(p1, PGSIZE) == -1)
+  //   { // just the first page
+  //     err("munmap (7)(1)");
+  //   }
+  //   exit(0); // tell the parent that the mapping looks OK.
+  // }
+
+  
+  if (pid == 0) 
+  {
     _v1(p1);
-    if (munmap(p1, PGSIZE) == -1) // just the first page
+    //printf("starting to unmap\n");
+    if (munmap(p1, PGSIZE) == -1)
+    { // just the first page
       err("munmap (7)");
+    }
     exit(0); // tell the parent that the mapping looks OK.
   }
 

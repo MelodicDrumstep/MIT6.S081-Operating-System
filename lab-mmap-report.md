@@ -802,13 +802,15 @@ exit(int status)
         }
         uvmunmap(p -> pagetable, unmap_addr, 1, 1);
         // unmap one page at a time
+        fileclose(pointer_to_vma -> vma_file);
+        pointer_to_vma -> used = 0;
       }
     }
-    pointer_to_vma -> used = 0;
   }
 
   // Close all open files.
-  for(int fd = 0; fd < NOFILE; fd++){
+  for(int fd = 0; fd < NOFILE; fd++)
+  {
     if(p->ofile[fd]){
       struct file *f = p->ofile[fd];
       fileclose(f);
@@ -822,3 +824,30 @@ exit(int status)
 
 ## modify fork
 
+
+## DEBUG
+
+最终终于通过了所有测试！！！
+
+```
+$ mmaptest
+mmap_test starting
+test mmap f
+test mmap f: OK
+test mmap private
+test mmap private: OK
+test mmap read-only
+test mmap read-only: OK
+test mmap read/write
+test mmap read/write: OK
+test mmap dirty
+test mmap dirty: OK
+test not-mapped unmap
+test not-mapped unmap: OK
+test mmap two files
+test mmap two files: OK
+mmap_test: ALL OK
+fork_test starting
+fork_test OK
+mmaptest: all tests succeeded
+```

@@ -6,6 +6,7 @@
 #include "proc.h"
 #include "defs.h"
 #include "fcntl.h"
+#include "struct_file.h"
 
 struct cpu cpus[NCPU];
 
@@ -354,6 +355,30 @@ fork(void)
     return -1;
   }
 
+  struct vma * pointer_to_vma_p;
+  struct vma * pointer_to_vma_np;
+  // Copy the vma array
+
+  for(int i = 0; i < MAX_VMA; i++)
+  {
+    pointer_to_vma_np = &(np -> vma[i]);
+    pointer_to_vma_p = &(p -> vma[i]);
+    pointer_to_vma_np -> used = 0;
+    if(pointer_to_vma_p -> used)
+    {
+      pointer_to_vma_np -> used = pointer_to_vma_p -> used;
+      pointer_to_vma_np -> starting_addr = pointer_to_vma_p -> starting_addr;
+      pointer_to_vma_np -> length = pointer_to_vma_p -> length;
+      pointer_to_vma_np -> prot = pointer_to_vma_p -> prot;
+      pointer_to_vma_np -> flags = pointer_to_vma_p -> flags;
+      strncpy(pointer_to_vma_np -> filename, pointer_to_vma_p -> filename, MAXPATH);
+      pointer_to_vma_np -> fd = pointer_to_vma_p -> fd;
+      pointer_to_vma_np -> offset = pointer_to_vma_p -> offset;
+      pointer_to_vma_np -> vma_file = pointer_to_vma_p -> vma_file;
+      filedup(pointer_to_vma_p -> vma_file);
+    }
+  }
+
   // Copy user memory from parent to child.
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0)
   {
@@ -454,7 +479,9 @@ exit(int status)
 
         // Check if I need to write back to the file
         // Notice !! This must happen before doing the "uvmunmap"
-        if(pointer_to_vma -> flags & MAP_SHARED)
+              if((pointer_to_vma -> flags & MAP_SHARED)
+               && (pointer_to_vma -> prot & PROT_WRITE) 
+               && (pointer_to_vma -> vma_file -> writable))
         {
           if(filewrite(pointer_to_vma -> vma_file, unmap_addr, PGSIZE) < 0)
           {
@@ -463,15 +490,19 @@ exit(int status)
         }
         uvmunmap(p -> pagetable, unmap_addr, 1, 1);
         // unmap one page at a time
+
+        //fileclose(pointer_to_vma -> vma_file);
+        // DO NOT close the file here! Because we have all files closed below
+        // If close the file here, It will lead to "panic : fileclose"
+
+        pointer_to_vma -> used = 0;
       }
     }
-    pointer_to_vma -> used = 0;
   }
 
-
-
   // Close all open files.
-  for(int fd = 0; fd < NOFILE; fd++){
+  for(int fd = 0; fd < NOFILE; fd++)
+  {
     if(p->ofile[fd]){
       struct file *f = p->ofile[fd];
       fileclose(f);
