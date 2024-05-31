@@ -8,10 +8,14 @@
 #include "e1000_dev.h"
 #include "net.h"
 
+// #define TEST_PRINT
+
+// Initialize a buffer ring for sending
 #define TX_RING_SIZE 16
 static struct tx_desc tx_ring[TX_RING_SIZE] __attribute__((aligned(16)));
 static struct mbuf *tx_mbufs[TX_RING_SIZE];
 
+// Initialize a buffer ring for receiving
 #define RX_RING_SIZE 16
 static struct rx_desc rx_ring[RX_RING_SIZE] __attribute__((aligned(16)));
 static struct mbuf *rx_mbufs[RX_RING_SIZE];
@@ -24,6 +28,9 @@ struct spinlock e1000_lock;
 // called by pci_init().
 // xregs is the memory address at which the
 // e1000's registers are mapped.
+// This function will configure E1000 to do "DMA",
+// namly, read packets to be transmitted from RAM
+// and write received pakcets to RAM
 void
 e1000_init(uint32 *xregs)
 {
@@ -41,7 +48,8 @@ e1000_init(uint32 *xregs)
 
   // [E1000 14.5] Transmit initialization
   memset(tx_ring, 0, sizeof(tx_ring));
-  for (i = 0; i < TX_RING_SIZE; i++) {
+  for (i = 0; i < TX_RING_SIZE; i++) 
+  {
     tx_ring[i].status = E1000_TXD_STAT_DD;
     tx_mbufs[i] = 0;
   }
@@ -53,7 +61,8 @@ e1000_init(uint32 *xregs)
   
   // [E1000 14.4] Receive initialization
   memset(rx_ring, 0, sizeof(rx_ring));
-  for (i = 0; i < RX_RING_SIZE; i++) {
+  for (i = 0; i < RX_RING_SIZE; i++) 
+  {
     rx_mbufs[i] = mbufalloc(0);
     if (!rx_mbufs[i])
       panic("e1000");
@@ -103,6 +112,12 @@ e1000_transmit(struct mbuf *m)
   // a pointer so that it can be freed after sending.
   //
   
+  // TEST_PRINT
+  #ifdef TEST_PRINT
+    printf("transmit!!\n");
+  #endif
+  // TEST_PRINT
+
   return 0;
 }
 
@@ -115,6 +130,12 @@ e1000_recv(void)
   // Check for packets that have arrived from the e1000
   // Create and deliver an mbuf for each packet (using net_rx()).
   //
+
+  // TEST_PRINT
+  #ifdef TEST_PRINT
+    printf("transmit!!\n");
+  #endif
+  // TEST_PRINT
 }
 
 void

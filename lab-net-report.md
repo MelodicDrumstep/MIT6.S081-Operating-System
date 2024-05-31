@@ -410,7 +410,173 @@ while True:
 
 我们这里的网卡是 `E1000` 型号. 
 
-`kernel/e1000_dev.h` 参照 E1000 的手册配置了一些宏。 E1000 的手册可以从 https://pdos.csail.mit.edu/6.828/2021/readings/8254x_GBe_SDM.pdf 访问到。
+`kernel/e1000_dev.h` 参照 E1000 的手册配置了一些宏。 E1000 的手册可以从 https://pdos.csail.mit.edu/6.828/2021/readings/8254x_GBe_SDM.pdf 访问到。 
 
 `kernel/e1000.c` 是本次任务需要修改的主文件。 下面我对它进行一个详细介绍:
  
+```c
+// Initialize a buffer ring for sending
+#define TX_RING_SIZE 16
+static struct tx_desc tx_ring[TX_RING_SIZE] __attribute__((aligned(16)));
+static struct mbuf *tx_mbufs[TX_RING_SIZE];
+
+// Initialize a buffer ring for receiving
+#define RX_RING_SIZE 16
+static struct rx_desc rx_ring[RX_RING_SIZE] __attribute__((aligned(16)));
+static struct mbuf *rx_mbufs[RX_RING_SIZE];
+
+// remember where the e1000's registers live.
+static volatile uint32 *regs;
+
+struct spinlock e1000_lock;
+
+// called by pci_init().
+// xregs is the memory address at which the
+// e1000's registers are mapped.
+// This function will configure E1000 to do "DMA",
+// namly, read packets to be transmitted from RAM
+// and write received pakcets to RAM
+void
+e1000_init(uint32 *xregs)
+{
+  //...
+  // Reset the device
+  regs[E1000_IMS] = 0; // disable interrupts
+  regs[E1000_CTL] |= E1000_CTL_RST;
+  regs[E1000_IMS] = 0; // redisable interrupts
+  __sync_synchronize();
+
+  // [E1000 14.5] Transmit initialization
+  // ...
+  // [E1000 14.4] Receive initialization
+  // ...
+}
+
+int
+e1000_transmit(struct mbuf *m)
+{
+  //
+  // Your code here.
+  //
+  // the mbuf contains an ethernet frame; program it into
+  // the TX descriptor ring so that the e1000 sends it. Stash
+  // a pointer so that it can be freed after sending.
+  //
+  
+  return 0;
+}
+
+static void
+e1000_recv(void)
+{
+  //
+  // Your code here.
+  //
+  // Check for packets that have arrived from the e1000
+  // Create and deliver an mbuf for each packet (using net_rx()).
+  //
+}
+
+void
+e1000_intr(void)
+{
+  // tell the e1000 we've seen this interrupt;
+  // without this the e1000 won't raise any
+  // further interrupts.
+  regs[E1000_ICR] = 0xffffffff;
+
+  e1000_recv();
+}
+```
+
+这里的 `e1000_init()` 函数会按照手册配置 E1000 使其能进行 `DMA (Direct Memory Access)`。 `DMA` 技术能够绕过 CPU 的干预， 使网卡直接和内存进行交互， 从而极大地提高数据传输效率和系统性能。 
+
+我们需要编写 `e1000_transmit` 和 `e1000_recv` 函数， 完成 packet 的收发。
+
+这里还需要了解一些信息:
+
+1.我们用于接收和发送 packet 的 `buffer` 有多个， 形成了一个 `buffer ring`. 这样可以让 packet 到达速度比 driver 处理速度更快时， 先将 packet 存入空闲的缓存。 E1000 要求每个 buffer 都以 `descriptor` 的形式提供接口。(即 `kernel/e1000_dev.h` 里的 `tx_desc` 和 `rx_desc`)
+
+2.当网络协议栈发送 packet 时， 会调用 `e1000_transmit`， 发送一个 `mbuf` 中的 packet. 只有当 E1000 完成了发送 packet 任务， 即设置好 `descriptor` 中的 `E1000_TEXD_STAT_DD` 之后才能释放这个 `buffer`.
+
+3.当 E1000 收到一个来自 ethernet 的 packet 之后， 先利用 `DMA` 技术把 packet 直接存入一个空闲的 `mbuf` 中， 然后引起中断。 `e1000_recv` 需要扫描整个 `RX buffer ring` ， 把 packet 用 `net_rx()` 函数送至网络协议栈进行解包。  
+
+```c
+// called by e1000 driver's interrupt handler to deliver a packet to the
+// networking stack
+void net_rx(struct mbuf *m)
+{
+  struct eth *ethhdr;
+  uint16 type;
+
+  ethhdr = mbufpullhdr(m, *ethhdr);
+  if (!ethhdr) {
+    mbuffree(m);
+    return;
+  }
+
+  type = ntohs(ethhdr->type);
+  if (type == ETHTYPE_IP)
+    net_rx_ip(m);
+  else if (type == ETHTYPE_ARP)
+    net_rx_arp(m);
+  else
+    mbuffree(m);
+}
+```
+
+然后我需要分配一个新的 `mbuf` 放置在此处填补空缺。
+
+4.驱动还会通过 `memory-mapped control registers` 和 E1000 网卡进行交互。 比如， 需要通过 `E100_RDT` 查看接收的 packet 是否可用， 或者通过 `E100_TDT` 通知 E1000 驱动有一些 packet 需要发送。
+
+# 开工！
+
+## 测试 e1000_transmit
+
+首先， 按照任务书指示， 我们添加一个输出测试一下:
+
+```c
+static void
+e1000_recv(void)
+{
+  //
+  // Your code here.
+  //
+  // Check for packets that have arrived from the e1000
+  // Create and deliver an mbuf for each packet (using net_rx()).
+  //
+
+  // TEST_PRINT
+  #ifdef TEST_PRINT
+    printf("transmit!!\n");
+  #endif
+  // TEST_PRINT
+}
+
+void
+e1000_intr(void)
+{
+  // tell the e1000 we've seen this interrupt;
+  // without this the e1000 won't raise any
+  // further interrupts.
+  regs[E1000_ICR] = 0xffffffff;
+
+  e1000_recv();
+}
+```
+
+然后一个窗口 `make server`， 另一个窗口 `make qemu $ nettests`.
+
+结果是， 发送方显示 
+
+```c
+$ nettests
+nettests running on port 25099
+testing ping: transmit!!
+```
+
+而接收方没有收到包。 这很符合直觉: `nettests` 会调用 `e1000_transmit`, 所以会看到它的输出。 而我们目前并没有实现这两个函数， 所以根本看不到接收的输出。
+
+## 
+
+
