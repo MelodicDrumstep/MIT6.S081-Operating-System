@@ -23,7 +23,8 @@ pci_init()
   uint32  *ecam = (uint32 *) 0x30000000L;
   
   // look at each possible PCI device on bus 0.
-  for(int dev = 0; dev < 32; dev++){
+  for(int dev = 0; dev < 32; dev++)
+  {
     int bus = 0;
     int func = 0;
     int offset = 0;
@@ -32,7 +33,8 @@ pci_init()
     uint32 id = base[0];
     
     // 100e:8086 is an e1000
-    if(id == 0x100e8086){
+    if(id == 0x100e8086)
+    {
       // command and status register.
       // bit 0 : I/O access enable
       // bit 1 : memory access enable

@@ -5,7 +5,8 @@
 #define MBUF_SIZE              2048
 #define MBUF_DEFAULT_HEADROOM  128
 
-struct mbuf {
+struct mbuf 
+{
   struct mbuf  *next; // the next mbuf in the chain
   char         *head; // the current start position of the buffer
   unsigned int len;   // the length of the buffer
