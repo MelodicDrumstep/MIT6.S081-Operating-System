@@ -101,12 +101,12 @@ e1000_init(uint32 *xregs)
   regs[E1000_IMS] = (1 << 7); // RXDW -- Receiver Descriptor Write Back
 }
 
+// This will be called when the host already pack a packet and 
+// hold a mbuf. This function will place this mbuf in the right place
+// of the transmission buffer ring and let the device know we want to transmit a packet
 int
 e1000_transmit(struct mbuf *m)
 {
-  //
-  // Your code here.
-  //
   // the mbuf contains an ethernet frame; program it into
   // the TX descriptor ring so that the e1000 sends it. Stash
   // a pointer so that it can be freed after sending.
@@ -118,15 +118,53 @@ e1000_transmit(struct mbuf *m)
   #endif
   // TEST_PRINT
 
+  acquire(&e1000_lock);
+  // I have to hold the lock because multiple process may want to transmit packets
+  
+  int index_available_in_tx_ring = regs[E1000_TDT];
+  // Ask the E1000 for the TX ring index at which
+  // it's expecting the next packet. This is memory mapped register
+
+  if(!(tx_ring[index_available_in_tx_ring].status & E1000_TXD_STAT_DD))
+  {
+    // Check if the former packet at this place of the buffer ring has already been transmitted
+    // If not, return and raise error
+    release(&e1000_lock);
+    return -1;
+  }
+
+  if(tx_mbufs[index_available_in_tx_ring])
+  {
+    // If the former packet is still in the buffer ring, free it
+    mbuffree(tx_mbufs[index_available_in_tx_ring]);
+  }
+
+  // Now I can place my mbuf here
+  // Firstly, modify the descriptor 
+  tx_ring[index_available_in_tx_ring].addr = (uint64)(m -> head);
+  // m -> head points to the packets's content in memory
+  tx_ring[index_available_in_tx_ring].length = (uint16)(m -> len);
+  // m -> len is the packet length
+  tx_ring[index_available_in_tx_ring].cmd = E1000_TXD_CMD_RS | E1000_TXD_CMD_EOP;
+  // Set the necessary flags
+
+  // And actually store a pointer of my packet
+  tx_mbufs[index_available_in_tx_ring] = m;
+
+  // Then modify the next TX ring index, this is momory mapped register
+  // And this will let E1000 know that it have to do the transmission
+  regs[E1000_TDT] = (regs[E1000_TDT] + 1) % TX_RING_SIZE;
+
+  release(&e1000_lock);
+
   return 0;
 }
 
+// It will take away the right mbuf
+// And call net_rx to automatically unpacking the packets
 static void
 e1000_recv(void)
 {
-  //
-  // Your code here.
-  //
   // Check for packets that have arrived from the e1000
   // Create and deliver an mbuf for each packet (using net_rx()).
   //
@@ -136,8 +174,42 @@ e1000_recv(void)
     printf("transmit!!\n");
   #endif
   // TEST_PRINT
+
+  // I don't have to hold the lock because I just read from the ring
+
+  while(1) // This will be a busy loop, we want to receive the packet once it's available
+  {
+    int index_available_in_rx_ring = (regs[E1000_RDT] + 1) % RX_RING_SIZE;
+    // Ask the E1000 for the ring index at which the next waiting received packet is located
+
+    if(!(rx_ring[index_available_in_rx_ring].status & E1000_RXD_STAT_DD))
+    {
+      // Check if it's available, if not, return and raise error
+      return;
+    }
+
+    // Now the packet is available, set m -> len according to the length in descriptor
+    rx_mbufs[index_available_in_rx_ring] -> len = (uint32)(rx_ring[index_available_in_rx_ring].length);
+    if(rx_mbufs[index_available_in_rx_ring])
+    {
+      // Unpacking the packet using "net_rx"
+      net_rx(rx_mbufs[index_available_in_rx_ring]);
+    }
+
+    // Now I have to allocate a new mbuf for later usage
+    rx_mbufs[index_available_in_rx_ring] = mbufalloc(0);
+    rx_ring[index_available_in_rx_ring].addr = (uint64)(rx_mbufs[index_available_in_rx_ring] -> head);
+    rx_ring[index_available_in_rx_ring].status = 0;
+
+    // And set the regs in E1000, this will let E1000 know that we finish receiving the current packet
+    regs[E1000_RDT] = index_available_in_rx_ring;
+  }
 }
 
+// This is the Device Interrupt Handler
+// This means E1000 use DMA to place a packet into the receive buffer ring
+// And we will let the device (E1000) know that
+// we have seen this interrupt, then call e1000_recv to receive the packet
 void
 e1000_intr(void)
 {

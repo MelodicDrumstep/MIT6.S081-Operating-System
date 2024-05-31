@@ -172,7 +172,8 @@ net_tx_eth(struct mbuf *m, uint16 ethtype)
   // to broadcast instead.
   memmove(ethhdr->dhost, broadcast_mac, ETHADDR_LEN);
   ethhdr->type = htons(ethtype);
-  if (e1000_transmit(m)) {
+  if (e1000_transmit(m)) 
+  {
     mbuffree(m);
   }
 }
