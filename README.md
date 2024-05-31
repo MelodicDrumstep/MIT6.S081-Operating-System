@@ -4,8 +4,10 @@
 
 `main branch` 中完成了 `util + syscall lab, traps lab, thread lab, lock lab, pgtbl lab`.
 
-`cow_fork branch` 中完成了 `cow lab`.
+`cow branch` 中完成了 `cow lab`.
 
-`fs_mmap_net branch` 中完成了 `fs lab, mmap lab, net lab`.
+`fs_mmap branch` 中完成了 `fs lab, mmap lab`.
+
+`net branch` 中完成了 `net lab`.
 
 对于每个 lab 我都写了项目报告， 请见对应 lab-*-report.txt.
