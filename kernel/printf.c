@@ -109,7 +109,6 @@ printf(char *fmt, ...)
       break;
     }
   }
-  va_end(ap);
 
   if(locking)
     release(&pr.lock);

@@ -68,9 +68,6 @@ pipeclose(struct pipe *pi, int writable)
   }
   if(pi->readopen == 0 && pi->writeopen == 0){
     release(&pi->lock);
-#ifdef LAB_LOCK
-    freelock(&pi->lock);
-#endif    
     kfree((char*)pi);
   } else
     release(&pi->lock);
@@ -84,7 +81,7 @@ pipewrite(struct pipe *pi, uint64 addr, int n)
 
   acquire(&pi->lock);
   while(i < n){
-    if(pi->readopen == 0 || killed(pr)){
+    if(pi->readopen == 0 || pr->killed){
       release(&pi->lock);
       return -1;
     }
@@ -114,7 +111,7 @@ piperead(struct pipe *pi, uint64 addr, int n)
 
   acquire(&pi->lock);
   while(pi->nread == pi->nwrite && pi->writeopen){  //DOC: pipe-empty
-    if(killed(pr)){
+    if(pr->killed){
       release(&pi->lock);
       return -1;
     }

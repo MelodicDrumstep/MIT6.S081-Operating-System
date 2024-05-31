@@ -38,16 +38,6 @@ start()
   w_mideleg(0xffff);
   w_sie(r_sie() | SIE_SEIE | SIE_STIE | SIE_SSIE);
 
-#ifdef KCSAN
-  // allow supervisor to read cycle counter register
-  w_mcounteren(r_mcounteren()|0x3);
-#endif
-  
-  // configure Physical Memory Protection to give supervisor mode
-  // access to all of physical memory.
-  w_pmpaddr0(0x3fffffffffffffull);
-  w_pmpcfg0(0xf);
-
   // ask for clock interrupts.
   timerinit();
 
@@ -59,9 +49,8 @@ start()
   asm volatile("mret");
 }
 
-// arrange to receive timer interrupts.
-// they will arrive in machine mode at
-// at timervec in kernelvec.S,
+// set up to receive timer interrupts in machine mode,
+// which arrive at timervec in kernelvec.S,
 // which turns them into software interrupts for
 // devintr() in trap.c.
 void

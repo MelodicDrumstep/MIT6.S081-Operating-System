@@ -40,9 +40,8 @@ void rinode(uint inum, struct dinode *ip);
 void rsect(uint sec, void *buf);
 uint ialloc(ushort type);
 void iappend(uint inum, void *p, int n);
-void die(const char *);
 
-// convert to riscv byte order
+// convert to intel byte order
 ushort
 xshort(ushort x)
 {
@@ -86,8 +85,10 @@ main(int argc, char *argv[])
   assert((BSIZE % sizeof(struct dirent)) == 0);
 
   fsfd = open(argv[1], O_RDWR|O_CREAT|O_TRUNC, 0666);
-  if(fsfd < 0)
-    die(argv[1]);
+  if(fsfd < 0){
+    perror(argv[1]);
+    exit(1);
+  }
 
   // 1 fs block = 1 disk sector
   nmeta = 2 + nlog + ninodeblocks + nbitmap;
@@ -137,8 +138,10 @@ main(int argc, char *argv[])
     
     assert(index(shortname, '/') == 0);
 
-    if((fd = open(argv[i], 0)) < 0)
-      die(argv[i]);
+    if((fd = open(argv[i], 0)) < 0){
+      perror(argv[i]);
+      exit(1);
+    }
 
     // Skip leading _ in name when writing to file system.
     // The binaries are named _rm, _cat, etc. to keep the
@@ -175,10 +178,14 @@ main(int argc, char *argv[])
 void
 wsect(uint sec, void *buf)
 {
-  if(lseek(fsfd, sec * BSIZE, 0) != sec * BSIZE)
-    die("lseek");
-  if(write(fsfd, buf, BSIZE) != BSIZE)
-    die("write");
+  if(lseek(fsfd, sec * BSIZE, 0) != sec * BSIZE){
+    perror("lseek");
+    exit(1);
+  }
+  if(write(fsfd, buf, BSIZE) != BSIZE){
+    perror("write");
+    exit(1);
+  }
 }
 
 void
@@ -211,10 +218,14 @@ rinode(uint inum, struct dinode *ip)
 void
 rsect(uint sec, void *buf)
 {
-  if(lseek(fsfd, sec * BSIZE, 0) != sec * BSIZE)
-    die("lseek");
-  if(read(fsfd, buf, BSIZE) != BSIZE)
-    die("read");
+  if(lseek(fsfd, sec * BSIZE, 0) != sec * BSIZE){
+    perror("lseek");
+    exit(1);
+  }
+  if(read(fsfd, buf, BSIZE) != BSIZE){
+    perror("read");
+    exit(1);
+  }
 }
 
 uint
@@ -291,11 +302,4 @@ iappend(uint inum, void *xp, int n)
   }
   din.size = xint(off);
   winode(inum, &din);
-}
-
-void
-die(const char *s)
-{
-  perror(s);
-  exit(1);
 }

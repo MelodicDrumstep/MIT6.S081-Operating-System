@@ -277,15 +277,14 @@ go(int which_child)
       close(aa[0]);
       close(aa[1]);
       close(bb[1]);
-      char buf[4] = { 0, 0, 0, 0 };
+      char buf[3] = { 0, 0, 0 };
       read(bb[0], buf+0, 1);
       read(bb[0], buf+1, 1);
-      read(bb[0], buf+2, 1);
       close(bb[0]);
       int st1, st2;
       wait(&st1);
       wait(&st2);
-      if(st1 != 0 || st2 != 0 || strcmp(buf, "hi\n") != 0){
+      if(st1 != 0 || st2 != 0 || strcmp(buf, "hi") != 0){
         printf("grind: exec pipeline failed %d %d \"%s\"\n", st1, st2, buf);
         exit(1);
       }
@@ -305,7 +304,7 @@ iter()
     exit(1);
   }
   if(pid1 == 0){
-    rand_next ^= 31;
+    rand_next = 31;
     go(0);
     exit(0);
   }
@@ -316,7 +315,7 @@ iter()
     exit(1);
   }
   if(pid2 == 0){
-    rand_next ^= 7177;
+    rand_next = 7177;
     go(1);
     exit(0);
   }
@@ -346,6 +345,5 @@ main()
       wait(0);
     }
     sleep(20);
-    rand_next += 1;
   }
 }

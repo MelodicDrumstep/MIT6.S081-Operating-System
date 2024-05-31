@@ -158,9 +158,17 @@ pop_off(void)
     intr_on();
 }
 
+// Read a shared 64-bit value without holding a lock
+uint64
+lockfree_read8(uint64 *addr) {
+  uint64 val;
+  __atomic_load(addr, &val, __ATOMIC_SEQ_CST);
+  return val;
+}
+
 // Read a shared 32-bit value without holding a lock
 int
-atomic_read4(int *addr) {
+lockfree_read4(int *addr) {
   uint32 val;
   __atomic_load(addr, &val, __ATOMIC_SEQ_CST);
   return val;
