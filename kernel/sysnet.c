@@ -45,23 +45,25 @@ sockalloc(struct file **f, uint32 raddr, uint16 lport, uint16 rport)
     goto bad;
 
   // initialize objects
-  si->raddr = raddr;
-  si->lport = lport;
-  si->rport = rport;
+  si->raddr = raddr; // remote address
+  si->lport = lport; // local port
+  si->rport = rport; // remote port
   initlock(&si->lock, "sock");
-  mbufq_init(&si->rxq);
-  (*f)->type = FD_SOCK;
-  (*f)->readable = 1;
+  mbufq_init(&si->rxq); // initialize the mbuf queue
+  (*f)->type = FD_SOCK; // set the file type to FD_SOCK
+  (*f)->readable = 1;   
   (*f)->writable = 1;
-  (*f)->sock = si;
+  (*f)->sock = si;      // assign the socket we allocated to the file control block
 
   // add to list of sockets
   acquire(&lock);
   pos = sockets;
-  while (pos) {
+  while (pos) 
+  {
     if (pos->raddr == raddr &&
         pos->lport == lport &&
-	pos->rport == rport) {
+	      pos->rport == rport) 
+    {
       release(&lock);
       goto bad;
     }
@@ -89,7 +91,8 @@ sockclose(struct sock *si)
   // remove from list of sockets
   acquire(&lock);
   pos = &sockets;
-  while (*pos) {
+  while (*pos) 
+  {
     if (*pos == si){
       *pos = si->next;
       break;
@@ -99,7 +102,8 @@ sockclose(struct sock *si)
   release(&lock);
 
   // free any pending mbufs
-  while (!mbufq_empty(&si->rxq)) {
+  while (!mbufq_empty(&si->rxq)) 
+  {
     m = mbufq_pophead(&si->rxq);
     mbuffree(m);
   }
@@ -115,7 +119,8 @@ sockread(struct sock *si, uint64 addr, int n)
   int len;
 
   acquire(&si->lock);
-  while (mbufq_empty(&si->rxq) && !pr->killed) {
+  while (mbufq_empty(&si->rxq) && !pr->killed) 
+  {
     sleep(&si->rxq, &si->lock);
   }
   if (pr->killed) {
@@ -128,7 +133,8 @@ sockread(struct sock *si, uint64 addr, int n)
   len = m->len;
   if (len > n)
     len = n;
-  if (copyout(pr->pagetable, addr, m->head, len) == -1) {
+  if (copyout(pr->pagetable, addr, m->head, len) == -1) 
+  {
     mbuffree(m);
     return -1;
   }
@@ -143,14 +149,19 @@ sockwrite(struct sock *si, uint64 addr, int n)
   struct mbuf *m;
 
   m = mbufalloc(MBUF_DEFAULT_HEADROOM);
+  // Allocate a new mbuf to hold the data
+
   if (!m)
     return -1;
 
-  if (copyin(pr->pagetable, mbufput(m, n), addr, n) == -1) {
+  if (copyin(pr->pagetable, mbufput(m, n), addr, n) == -1) 
+  {
     mbuffree(m);
     return -1;
   }
   net_tx_udp(m, si->raddr, si->lport, si->rport);
+  // call "net_tx_udp" to pack the data and transmit the data
+
   return n;
 }
 

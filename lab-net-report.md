@@ -529,6 +529,173 @@ void net_rx(struct mbuf *m)
 
 4.驱动还会通过 `memory-mapped control registers` 和 E1000 网卡进行交互。 比如， 需要通过 `E100_RDT` 查看接收的 packet 是否可用， 或者通过 `E100_TDT` 通知 E1000 驱动有一些 packet 需要发送。
 
+## socket 相关的系统调用
+
+`kernel/sysnet.c` 中包含了和 `socket` 相关的系统调用: `sockalloc, sockclose, sockread, sockwrite, sockrecvudp`.
+
+我们不妨来看一下它们的实现:
+
+### sockalloc
+
+这个系统调用用于分配一个新的 `socket`. 这里一定要理解 `unix 中一切皆文件的思想`， 我们也是用文件的接口来处理 `socket` 的。 所以这里是分配了一个新的 `file control block`, 并设置其为 `FD_SOCK`. 另外，这里我们为每个 `socket` 都分配了一组 `buffer ring` 用于读写。实现如下, 我写了一些注释。
+
+```c
+int
+sockalloc(struct file **f, uint32 raddr, uint16 lport, uint16 rport)
+{
+  struct sock *si, *pos;
+
+  si = 0;
+  *f = 0;
+  if ((*f = filealloc()) == 0)
+    goto bad;
+  if ((si = (struct sock*)kalloc()) == 0)
+    goto bad;
+
+  // initialize objects
+  si->raddr = raddr; // remote address
+  si->lport = lport; // local port
+  si->rport = rport; // remote port
+  initlock(&si->lock, "sock");
+  mbufq_init(&si->rxq); // initialize the mbuf queue
+  (*f)->type = FD_SOCK; // set the file type to FD_SOCK
+  (*f)->readable = 1;   
+  (*f)->writable = 1;
+  (*f)->sock = si;      // assign the socket we allocated to the file control block
+
+  // add to list of sockets
+  acquire(&lock);
+  pos = sockets;
+  while (pos) 
+  {
+    if (pos->raddr == raddr &&
+        pos->lport == lport &&
+	      pos->rport == rport) 
+    {
+      release(&lock);
+      goto bad;
+    }
+    pos = pos->next;
+  }
+  si->next = sockets;
+  sockets = si;
+  release(&lock);
+  return 0;
+
+bad:
+  if (si)
+    kfree((char*)si);
+  if (*f)
+    fileclose(*f);
+  return -1;
+}
+```
+
+### sockclose
+
+这个系统调用用于销毁一个 `socket`. 实现很简单:
+
+``` c
+void
+sockclose(struct sock *si)
+{
+  struct sock **pos;
+  struct mbuf *m;
+
+  // remove from list of sockets
+  acquire(&lock);
+  pos = &sockets;
+  while (*pos) 
+  {
+    if (*pos == si){
+      *pos = si->next;
+      break;
+    }
+    pos = &(*pos)->next;
+  }
+  release(&lock);
+
+  // free any pending mbufs
+  while (!mbufq_empty(&si->rxq)) 
+  {
+    m = mbufq_pophead(&si->rxq);
+    mbuffree(m);
+  }
+
+  kfree((char*)si);
+}
+```
+
+### sockread
+
+`sockread` 系统调用即从 `socket` 中读取已经解包好的数据。 所以如何把数据放置在 `socket` 对应的 `receive buffer ring`， 以及同时做好解包， 就是我们需要编写的 `device interrupt handler` 在 E1000 发送过来一个数据包并产生中断之后需要做的事情。 
+
+`sockread` 的实现也很简单， 如下:
+
+```c
+int
+sockread(struct sock *si, uint64 addr, int n)
+{
+  struct proc *pr = myproc();
+  struct mbuf *m;
+  int len;
+
+  acquire(&si->lock);
+  while (mbufq_empty(&si->rxq) && !pr->killed) 
+  {
+    sleep(&si->rxq, &si->lock);
+  }
+  if (pr->killed) {
+    release(&si->lock);
+    return -1;
+  }
+  m = mbufq_pophead(&si->rxq);
+  release(&si->lock);
+
+  len = m->len;
+  if (len > n)
+    len = n;
+  if (copyout(pr->pagetable, addr, m->head, len) == -1) 
+  {
+    mbuffree(m);
+    return -1;
+  }
+  mbuffree(m);
+  return len;
+}
+```
+
+### sockwrite
+
+`sockwrite` 系统调用是将内存中未加包的数据通过 `socket` 发送。 实现如下:
+
+```c
+int
+sockwrite(struct sock *si, uint64 addr, int n)
+{
+  struct proc *pr = myproc();
+  struct mbuf *m;
+
+  m = mbufalloc(MBUF_DEFAULT_HEADROOM);
+  // Allocate a new mbuf to hold the data
+
+  if (!m)
+    return -1;
+
+  if (copyin(pr->pagetable, mbufput(m, n), addr, n) == -1) 
+  {
+    mbuffree(m);
+    return -1;
+  }
+  net_tx_udp(m, si->raddr, si->lport, si->rport);
+  // call "net_tx_udp" to pack the data and transmit the data
+
+  return n;
+}
+```
+
+这里需要注意， 把数据加包是 `sockwrite` 系统调用为我们做的， 不是程序代码里手动做的。 另外， `sockwrite` 会调用 `net_tx_udp` 进行加包， 并之后调用 `e1000_transmit` 进行发送。
+
 # 开工！
 
 ## 测试 e1000_transmit
@@ -577,6 +744,199 @@ testing ping: transmit!!
 
 而接收方没有收到包。 这很符合直觉: `nettests` 会调用 `e1000_transmit`, 所以会看到它的输出。 而我们目前并没有实现这两个函数， 所以根本看不到接收的输出。
 
-## 
+## 实现 e1000_transmit
+
+实际上跟着任务书的提示来写就很简单了。 
+
+首先我需要明确， `e1000_transmit` 何时调用？ 
+
+是用户进程需要通过某 `socket` 传输一些数据， 调用用户态接口函数， 触发系统调用 `sockwrite`; `sockwrite` 将数据打包为 `mbuf`, 然后调用 `net_tx_udp` 加 UDP 包， `net_tx_udp` 会调用 `net_tx_ip` 加 IP 包， `net_tx_ip` 调用 `net_tx_eth` 加 ethernet 包， 最后 `net_tx_eth` 调用 `e1000_transmit`, 这个函数将加包后的 `mbuf` 放入该 `socket` 对应的 `transmission buffer ring` 的空闲位置， 然后通知 E1000 设备， 由 E1000 进行真正的传输。
+
+全部理解了之后实现就很简单了， 我在代码中写了详细的注释:
+
+```c
+// This will be called when the host already pack a packet and 
+// hold a mbuf. This function will place this mbuf in the right place
+// of the transmission buffer ring and let the device know we want to transmit a packet
+int
+e1000_transmit(struct mbuf *m)
+{
+  // the mbuf contains an ethernet frame; program it into
+  // the TX descriptor ring so that the e1000 sends it. Stash
+  // a pointer so that it can be freed after sending.
+  //
+  
+  // TEST_PRINT
+  #ifdef TEST_PRINT
+    printf("transmit!!\n");
+  #endif
+  // TEST_PRINT
+
+  acquire(&e1000_lock);
+  // I have to hold the lock because multiple process may want to transmit packets
+  
+  int index_available_in_tx_ring = regs[E1000_TDT];
+  // Ask the E1000 for the TX ring index at which
+  // it's expecting the next packet. This is memory mapped register
+
+  if(!(tx_ring[index_available_in_tx_ring].status & E1000_TXD_STAT_DD))
+  {
+    // Check if the former packet at this place of the buffer ring has already been transmitted
+    // If not, return and raise error
+    release(&e1000_lock);
+    return -1;
+  }
+
+  if(tx_mbufs[index_available_in_tx_ring])
+  {
+    // If the former packet is still in the buffer ring, free it
+    mbuffree(tx_mbufs[index_available_in_tx_ring]);
+  }
+
+  // Now I can place my mbuf here
+  // Firstly, modify the descriptor 
+  tx_ring[index_available_in_tx_ring].addr = (uint64)(m -> head);
+  // m -> head points to the packets's content in memory
+  tx_ring[index_available_in_tx_ring].length = (uint16)(m -> len);
+  // m -> len is the packet length
+  tx_ring[index_available_in_tx_ring].cmd = E1000_TXD_CMD_RS | E1000_TXD_CMD_EOP;
+  // Set the necessary flags
+
+  // And actually store a pointer of my packet
+  tx_mbufs[index_available_in_tx_ring] = m;
+
+  // Then modify the next TX ring index, this is momory mapped register
+  // And this will let E1000 know that it have to do the transmission
+  regs[E1000_TDT] = (regs[E1000_TDT] + 1) % TX_RING_SIZE;
+
+  release(&e1000_lock);
+
+  return 0;
+}
+```
+
+## 实现 e1000_recv
+
+接下来我们来实现 `e1000_recv`. 
+
+同样， 我们需要知道调用栈的全部信息。 我们是如何一步步调用到 `e1000_recv` 的？
+
+当有 `packet` 来到 E1000 设备时， E1000 会利用 `DMA` 技术将该 `packet` 直接放置到 `socket` 对应的 `receive buffer ring` 的空闲位置。 然后 E1000 会触发一个硬件中断。 CPU 会有一个核心去处理这个中断， 调用 `device(E1000) interrupt handler`. 这个 handler 是这样的:
+
+```c
+// This is the Device Interrupt Handler
+// This means E1000 use DMA to place a packet into the receive buffer ring
+// And we will let the device (E1000) know that
+// we have seen this interrupt, then call e1000_recv to receive the packet
+void
+e1000_intr(void)
+{
+  // tell the e1000 we've seen this interrupt;
+  // without this the e1000 won't raise any
+  // further interrupts.
+  regs[E1000_ICR] = 0xffffffff;
+
+  e1000_recv();
+}
+```
+
+我们可以看到， 它先告诉 E1000 我们已经处理了这个中断， 之后直接调用 `e1000_recv` 去 `receive buffer ring` 中读取数据。 所以我们的函数需要做的是从正确的位置读出 `mbuf`， 调用 `net_rx` 进行自动解包， 然后分配一个新的 `mbuf` 填充 `buffer ring` 里面的空缺。 
+
+理解之后实现就很简单了， 我写了详细的注释:
+
+```c
+// It will take away the right mbuf
+// And call net_rx to automatically unpacking the packets
+static void
+e1000_recv(void)
+{
+  // Check for packets that have arrived from the e1000
+  // Create and deliver an mbuf for each packet (using net_rx()).
+  //
+
+  // TEST_PRINT
+  #ifdef TEST_PRINT
+    printf("transmit!!\n");
+  #endif
+  // TEST_PRINT
+
+  // I don't have to hold the lock because I just read from the ring
+
+  while(1) // This will be a busy loop, we want to receive the packet once it's available
+  {
+    int index_available_in_rx_ring = (regs[E1000_RDT] + 1) % RX_RING_SIZE;
+    // Ask the E1000 for the ring index at which the next waiting received packet is located
+
+    if(!(rx_ring[index_available_in_rx_ring].status & E1000_RXD_STAT_DD))
+    {
+      // Check if it's available, if not, return and raise error
+      return;
+    }
+
+    // Now the packet is available, set m -> len according to the length in descriptor
+    rx_mbufs[index_available_in_rx_ring] -> len = (uint32)(rx_ring[index_available_in_rx_ring].length);
+    if(rx_mbufs[index_available_in_rx_ring])
+    {
+      // Unpacking the packet using "net_rx"
+      net_rx(rx_mbufs[index_available_in_rx_ring]);
+    }
+
+    // Now I have to allocate a new mbuf for later usage
+    rx_mbufs[index_available_in_rx_ring] = mbufalloc(0);
+    rx_ring[index_available_in_rx_ring].addr = (uint64)(rx_mbufs[index_available_in_rx_ring] -> head);
+    rx_ring[index_available_in_rx_ring].status = 0;
+
+    // And set the regs in E1000, this will let E1000 know that we finish receiving the current packet
+    regs[E1000_RDT] = index_available_in_rx_ring;
+  }
+}
+```
+
+# 通过测试！
+
+接下来一个窗口 `make server`， 另一个 `make qemu $ nettests`, 可以看到通过了所有测试:
 
 
+```
+root/mnt/d/CS2953-2024# make server
+python3 server.py 25099
+listening on localhost port 25099
+a message from xv6!
+a message from xv6!
+a message from xv6!
+a message from xv6!
+a message from xv6!
+a message from xv6!
+...
+
+tcpdump -XXnr packets.pcap
+14:10:54.752366 IP 10.0.2.15.2000 > 10.0.2.2.25099: UDP, length 19
+        0x0000:  ffff ffff ffff 5254 0012 3456 0800 4500  ......RT..4V..E.
+        0x0010:  002f 0000 0000 6411 3eae 0a00 020f 0a00  ./....d.>.......
+        0x0020:  0202 07d0 620b 001b 0000 6120 6d65 7373  ....b.....a.mess
+        0x0030:  6167 6520 6672 6f6d 2078 7636 21         age.from.xv6!
+14:10:54.753041 IP 10.0.2.2.25099 > 10.0.2.15.2000: UDP, length 17
+        0x0000:  5254 0012 3456 5255 0a00 0202 0800 4500  RT..4VRU......E.
+        0x0010:  002d 000f 0000 4011 62a1 0a00 0202 0a00  .-....@.b.......
+        0x0020:  020f 620b 07d0 0019 35fe 7468 6973 2069  ..b.....5.this.i
+        0x0030:  7320 7468 6520 686f 7374 21              s.the.host!
+//...
+```
+
+```
+$ nettests
+nettests running on port 25099
+testing ping: OK
+testing single-process pings: OK
+testing multi-process pings: OK
+testing DNS
+DNS arecord for pdos.csail.mit.edu. is 128.52.129.126
+DNS OK
+all tests passed.
+```
+
+# 总结
+
+这个 lab 让我学到了操作系统如何和外设交互、 如何网络收发包、 网络协议栈扮演怎样的角色。
+
+我觉得计算机网络真的很有意思， 层层抽象封装， 都是大智慧。
