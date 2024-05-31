@@ -60,10 +60,13 @@ consolewrite(int user_src, uint64 src, int n)
 {
   int i;
 
-  for(i = 0; i < n; i++){
+  for(i = 0; i < n; i++)
+  {
     char c;
     if(either_copyin(&c, user_src, src+i, 1) == -1)
+    {
       break;
+    }
     uartputc(c);
   }
 
