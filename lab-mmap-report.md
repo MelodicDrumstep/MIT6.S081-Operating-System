@@ -887,7 +887,7 @@ fork(void)
   pointer_to_vma -> used = 0;
 ```
 
-# 大功告成！
+# 通过基础测试！
 
 最终终于通过了所有测试！！！
 
@@ -937,3 +937,58 @@ mmaptest: all tests succeeded
 + 最后修改好 `fork` 系统调用， 复制时也将 `vma` 进行复制。
 
 这样就可以实现一个 `mmap` 了。 
+
+# Improvement
+
+上述过程实现了一个简易的 `mmap` 并通过了基础测试. 现在我们来考虑对它进行优化。 任务书上是这么写的:
+
+```
+Currently your implementation allocates a new physical page for each page read from the mmap-ed file, even though the data has been read in kernel memory in the buffer cache. Modify your implementation to use that physical memory instead of allocating a new page. This requires tha file blocks be the same size as pages (set BSIZE to PGSIZE). You will need to pin mmap-ed blocks into the buffer cache, reference counts should also be considered.
+```
+
+那就来按照这个思路优化它！ 如果对应 `page` 已经在 `buffer cache` 中了， 就直接从 `buffer cache` 中读取。
+
+那我首先把 `BSIZE` 改一下:
+
+```c
+#define BSIZE PGSIZE  // block size
+```
+
+现在的问题在于， 如何找到这个 `buffer cache` 对应的物理地址？ 我还在思考这个问题。
+
+我们来看一下 `readi` 的实现:
+
+```c
+// Read data from inode.
+// Caller must hold ip->lock.
+// If user_dst==1, then dst is a user virtual address;
+// otherwise, dst is a kernel address.
+int
+readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
+{
+  uint tot, m;
+  struct buf * bp;
+
+  if(off > ip->size || off + n < off)
+    return 0;
+  if(off + n > ip->size)
+    n = ip->size - off;
+
+  for(tot=0; tot<n; tot+=m, off+=m, dst+=m)
+  {
+    uint addr = bmap(ip, off/BSIZE);
+    if(addr == 0)
+      break;
+    bp = bread(ip->dev, addr);
+    m = min(n - tot, BSIZE - off%BSIZE);
+    if(either_copyout(user_dst, dst, bp->data + (off % BSIZE), m) == -1) 
+    {
+      brelse(bp);
+      tot = -1;
+      break;
+    }
+    brelse(bp);
+  }
+  return tot;
+}
+```
