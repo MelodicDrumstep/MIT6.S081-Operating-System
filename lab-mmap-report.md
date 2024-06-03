@@ -954,7 +954,7 @@ Currently your implementation allocates a new physical page for each page read f
 #define BSIZE PGSIZE  // block size
 ```
 
-现在的问题在于， 如何找到这个 `buffer cache` 对应的物理地址？ 我还在思考这个问题。
+现在的问题在于， 如何找到这个 `buffer cache` 对应的物理地址？ 
 
 我们来看一下 `readi` 的实现:
 
@@ -992,3 +992,199 @@ readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
   return tot;
 }
 ```
+
+## 深入理解 trap 与内核线程
+
+这里我们需要更深入地理解 `xv6` 中的 `trap` 与内核线程。 首先我们已经在 `trap lab` 中得知， 我们用户进程的地址空间是这样的：
+
+<img src="https://notes.sjtu.edu.cn/uploads/upload_e9d4701b6d664098fa4d26cbfc6cbce4.png" width="500">
+
+我们每个用户空间都会映射到一个独占的 `trapframe` 页， 这个页会在该进程陷入内核态时保存用户态的信息 (比如寄存器， program counter).
+
+`trampoline` 是一段特殊的代码， 即 `kernel/trampoline.S`. 它只有一份， 被所有用户进程共享映射。 当用户进程需要陷入内核态时，会调用这里的代码进行一些配置。
+
+另外注意，编译器编译时使用的地址都是 __offset（偏置）__. 真正执行这份程序时， 该进程的变量只会存在于该进程的空间中 (即同一份代码， 虚拟内存地址总是相同的， 但实际是物理内存地址可能不同). 把虚拟地址转换为物理地址是 `MMU (Memory Management Unit)` 为我们做的事情。 它会访问特定寄存器 `satp` 找到页表地址， 从而进行地址翻译。
+
+我们现在考虑一个用户进程需要陷入内核态， 它调用 `trampoline.S`， 把用户进程信息保存在 `trapframe` 里面， 然后跳转到 `usertrap` 函数。 请注意， __进程切换__ 只是一个操作系统虚拟化出的概念， 这里相当于我们用户态进程进行了少许配置就开始完成内核工作， "变成" 了内核线程， 完成内核工作之后又会 "变回来"。 而且上述切换过程并没有修改 "每个 CPU 上对应线程 ID" 这个数据结构， 即
+
+```c
+// Return this CPU's cpu struct.
+// Interrupts must be disabled.
+struct cpu*
+mycpu(void)
+{
+  int id = cpuid();
+  struct cpu *c = &cpus[id];
+  return c;
+}
+
+// Return the current struct proc *, or zero if none.
+struct proc*
+myproc(void)
+{
+  push_off();
+  struct cpu *c = mycpu();
+  struct proc *p = c->proc;
+  pop_off();
+  return p;
+}
+```
+
+`mycpu` 和 `myproc` 仍然会返回陷入内核态的用户进程的 ID. 所以， 我们实际上没有给 `内核进程` 设计 `process control block`. 我们这里是内核线程和用户进程的一对一模型。这种设计也有很多好处， 因为在陷入内核态之后我们往往还需要拿到之前对应的用户进程的 `process control block`. 
+
+请注意， 为什么我说上述一直描述的是 "用户进程" 而不是 "用户线程"？ 因为 `xv6` 每个进程只有一份 `trapframe`， 当前版本的 `xv6` 并不支持同一个进程的多个进程同时陷入内核态。 如果两个线程同时陷入内核态， 它们会把线程寄存器存入同一张 `trapframe page` 上， 引起覆盖。 所以， 如果要支持多线程陷入内核态， 我们需要修改 `trapframe` 的存储结构 (比如改成每个线程对应独立的 `trapframe`).
+
+现在还剩下一个问题: 内核的地址是怎么管理的？ 我们的 `xv6` 很简单， 它只有一个内核进程， 所有的内核线程是共享空间的， 而且这个空间大部分是 __直接映射__ 的， 只有 `trapframe` 和每个内核线程自己的栈空间不是直接映射的。下图是 `xv6` 的内核虚拟地址与物理地址的映射图。
+
+<img src="https://notes.sjtu.edu.cn/uploads/upload_dd4edcb78fc53333a0e4fe0d0ca4c68d.png" width="500">
+
+
+那既然是直接映射， 我们还需要为内核线程设置页表吗？ 答案是需要。 一方面， 并不是所有空间都是直接映射的。 另一方面， 因为 `MMU` 已经成为了硬件设计在体系结构中， 会自动将虚拟地址转换为物理地址。 如果没有明显收益的话，我们尽可能不添加额外逻辑绕开 `MMU`. 那解决方法也很简单: 我们创建一个直接映射的页表不就好了！ 然后我们把它存入 `trapframe -> kernel -> satp` 中。
+
+`xv6` 是这样做的:
+
+首先， 我们在操作系统启动的时候 (即 main 函数)， 会调用 `kernel/vm.c` 中的这些函数配置好 `kernel pagetable`:
+
+```c
+// start() jumps here in supervisor mode on all CPUs.
+void
+main()
+{
+  if(cpuid() == 0)
+  {
+    //...
+    kinit();         // physical page allocator
+    kvminit();       // create kernel page table
+    kvminithart();   // turn on paging
+    procinit();      // process table
+    trapinit();      // trap vectors
+    trapinithart();  // install kernel trap vector
+    //...
+    userinit();      // first user process
+  } 
+  else 
+  {
+    //...
+    kvminithart();    // turn on paging
+    trapinithart();   // install kernel trap vector
+    //...
+  }
+
+  scheduler();        
+}
+```
+
+我们来看这几个函数的实现:
+
+### kvminit
+
+```c
+// Initialize the one kernel_pagetable
+void
+kvminit(void)
+{
+  kernel_pagetable = kvmmake();
+}
+```
+
+`kvminit` 会调用 `kvmmake` 创建内核页表。
+
+### kvmmake
+
+```c
+// Make a direct-map page table for the kernel.
+pagetable_t
+kvmmake(void)
+{
+  pagetable_t kpgtbl;
+
+  kpgtbl = (pagetable_t) kalloc();
+  memset(kpgtbl, 0, PGSIZE);
+
+  // uart registers
+  kvmmap(kpgtbl, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+
+  // virtio mmio disk interface
+  kvmmap(kpgtbl, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+
+  // PLIC
+  kvmmap(kpgtbl, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+
+  // map kernel text executable and read-only.
+  kvmmap(kpgtbl, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
+
+  // map kernel data and the physical RAM we'll make use of.
+  kvmmap(kpgtbl, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
+
+  // map the trampoline for trap entry/exit to
+  // the highest virtual address in the kernel.
+  kvmmap(kpgtbl, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+
+  // allocate and map a kernel stack for each process.
+  proc_mapstacks(kpgtbl);
+  
+  return kpgtbl;
+}
+```
+
+`kvmmake` 会直接映射大部分空间。 然后调用 `proc_mapstacks` 来映射栈空间。
+
+### proc_mapstacks
+
+```c
+// Allocate a page for each process's kernel stack.
+// Map it high in memory, followed by an invalid
+// guard page.
+void
+proc_mapstacks(pagetable_t kpgtbl)
+{
+  struct proc *p;
+  
+  for(p = proc; p < &proc[NPROC]; p++) 
+  {
+    char *pa = kalloc();
+    if(pa == 0)
+      panic("kalloc");
+    uint64 va = KSTACK((int) (p - proc));
+    kvmmap(kpgtbl, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  }
+}
+```
+
+请注意， 我们直接分配了 `NPROC` 个内核线程的栈空间并将其映射到了内核页表中！ 因为我们是 __每一个用户进程对应一个内核线程__， 因此这样分配是正确的。 或许我们可以采取 `lazy allocation` 的策略对这里进行优化， 不过我们先暂时抓住主题思想， 即每个内核线程有自己独立的栈空间， 它是非直接映射的。
+
+### kvminithart
+
+```c
+// Switch h/w page table register to the kernel's page table,
+// and enable paging.
+void
+kvminithart()
+{
+  // wait for any previous writes to the page table memory to finish.
+  sfence_vma();
+
+  w_satp(MAKE_SATP(kernel_pagetable));
+
+  // flush stale entries from the TLB.
+  sfence_vma();
+}
+```
+
+这里会调用 `w_satp` 配置内核页表至 `satp` 寄存器，我们来看这个函数.
+
+### w_satp
+
+```c
+// supervisor address translation and protection;
+// holds the address of the page table.
+static inline void 
+w_satp(uint64 x)
+{
+  asm volatile("csrw satp, %0" : : "r" (x));
+}
+```
+
+这里 `w_satp` 会调用 `compare and swap` 指令写入 `satp` 寄存器， 即配置 `kernel pagetable` 进入寄存器。
+
+请注意， 只有 `cpuid = 1` 的 CPU 会调用 `kvminit` 函数创建内核页表， 但是所有 `CPU` 都会调用 `kvminithart` 把页表寄存器配置为内核页表。 所以执行完之后所有页表寄存器都是内核页表了。
