@@ -1564,3 +1564,17 @@ int main()
   ### DEBUG
 
   现在只有一个测试点出错， 其他测试点全都通过了。 出错的测试点是 `test mmap read/write` 中的 `_v1` 函数。 把它注释掉就全部通过了。
+
+  现在这种 `mmap` 是可以通过测试的:
+
+  ```c
+  char *p = mmap(0, PGSIZE * 2, PROT_READ, MAP_PRIVATE, fd, 0);
+  ```
+
+  但是这种就过不了:
+
+  ```c
+    p = mmap(0, PGSIZE*2, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+  ```
+
+  具体问题明天再找。
