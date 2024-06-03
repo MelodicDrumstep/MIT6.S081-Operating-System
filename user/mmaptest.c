@@ -96,6 +96,59 @@ _v1(char *p)
 }
 
 //
+// check the content of the two mapped pages.
+//
+void
+_v11(char *p)
+{
+  //printf("inside _v1 test, check the content of the two mapped pages\n");
+  int i;
+  for (i = 0; i < PGSIZE * 2; i++) 
+  {
+    // DEBUGING
+    #ifdef DEBUG
+      printf("\nInside _v11!\n");
+    #endif
+    // DEBUGING
+
+    if (i < PGSIZE + (PGSIZE / 2)) 
+    {
+
+      // DEBUGING
+      #ifdef DEBUG
+        printf("\nInside _v11 loop %d!\n", i);
+      #endif
+      // DEBUGING
+
+      if (p[i] != 'A') 
+      {
+
+        // DEBUGING
+        #ifdef DEBUG
+        uint64 va = (uint64)&(p[i]);
+        printf("va is : %p \n", va);
+        printf("the char is : 0x%x\n", p[i]);
+        printf("\n");
+        #endif
+        // DEBUGING
+
+        printf("mismatch at %d, wanted 'A', got 0x%x\n", i, p[i]);
+        err("v1 mismatch (1)");
+      }
+    } 
+    else 
+    {
+      if (p[i] != 0) 
+      {
+        printf("mismatch at %d, wanted zero, got 0x%x\n", i, p[i]);
+        err("v1 mismatch (2)");
+      }
+    }
+  } 
+  //printf("outside _v1 test\n");
+}
+
+//
 // create a file to be mapped, containing
 // 1.5 pages of 'A' and half a page of zeros.
 //
@@ -192,7 +245,7 @@ mmap_test(void)
   // file opened read-only.
   if ((fd = open(f, O_RDONLY)) == -1)
     err("open (2)");
-  p = mmap(0, PGSIZE*3, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  p = mmap(0, PGSIZE * 3, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
   if (p != MAP_FAILED)
     err("mmap (3)");
   if (close(fd) == -1)
@@ -206,14 +259,28 @@ mmap_test(void)
   // file opened read/write.
   if ((fd = open(f, O_RDWR)) == -1)
     err("open (3)");
-  p = mmap(0, PGSIZE*3, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  p = mmap(0, PGSIZE * 3, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
   if (p == MAP_FAILED)
     err("mmap (4)");
   if (close(fd) == -1)
     err("close (3)");
 
+  // DEBUGING
+  #ifdef DEBUG
+    printf("Now I'm going to _v11\n");
+  #endif
+  // DEBUGING
+
+  // This is the one that matters a lot
+
   // check that the mapping still works after close(fd).
-  _v1(p);
+  _v11(p);
+
+  // DEBUGING
+  #ifdef DEBUG
+    printf("Now I'm going out of _v1\n");
+  #endif
+  // DEBUGING
 
   // write the mapped memory.
   for (i = 0; i < PGSIZE*2; i++)

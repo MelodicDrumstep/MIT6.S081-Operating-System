@@ -1326,11 +1326,113 @@ either_copyout(int user_dst, uint64 dst, void *src, uint64 len)
 
 那我们修改这个函数好了。 
 
+直接改成这个样子:
+
+```c
+void
+usertrap(void)
+{
+  //...
+  if((pa = (uint64)readi_return_buf(ip, read_file_offset)) < 0)
+  {
+    // Read the data into pa
+    iunlockput(ip);
+    end_op();
+    panic("can not read from the file");
+  }
+
+  // iunlockput(ip);
+  // At here, DO NOT use iput to drop a refcnt!!!
+  // Because this inode is using along the mmap block
+  // Then I should hold the refcnt along the mmap block
+  iunlock(ip);
+  end_op();
+
+  // Now set the PTE flags according to the 
+  // vma flags
+  // Notice that we manage the permission
+  // by use of PTE flags (page wide permission)
+  int flags = 0;
+  if(pointer_to_vma -> prot & PROT_READ)
+  {
+    flags |= PTE_R;
+  }
+  if(pointer_to_vma -> prot & PROT_WRITE)
+  {
+    flags |= PTE_W;
+  }
+  if(pointer_to_vma -> prot & PROT_EXEC)
+  {
+    flags |= PTE_X;
+  }
+  flags |= PTE_U;
+  // Let the user access this page
+
+  // Create page table mapping
+  if(mappages(p -> pagetable, va, PGSIZE, (uint64)pa, flags) < 0)
+  {
+    kfree((void * )pa);
+    panic("Mapping failed");
+  }
+  //...
+}
+```
+
+然后我写的 `readi_return_buf` 函数是这样的:
+
+```c
+// a new version of readi that will return the address of the buffer
+// holding the data of the block
+uint64
+readi_return_buf(struct inode * ip, uint off)
+{
+  uint n = BSIZE;
+  // tot is the number of types that have been written
+  struct buf * bp;
+  if(off > ip -> size || off + n < off)
+  {
+    // If the offset exceed the length of the file, report error
+    // If offset plus n will overflow, report error
+    return 0;
+  }
+
+  if(off + n > ip -> size)
+  {
+    // If offset plus n will exceed the length of the file
+    // modify n, to end at the end of the file
+    n = ip -> size - off;
+  }
+
+  uint addr = bmap(ip, off / BSIZE);
+  // Use bmap to get the address of the block
+
+  if(addr == 0)
+  {
+    // bmap failed
+    return -1;
+  }
+  bp = bread(ip -> dev, addr);
+  // use bread to read the block into a buffer in the buffer cache
+  // and return the buffer
+
+  // Pin it and increase the refcnt
+  bpin(bp);
+
+  brelse(bp);
+
+  return (uint64)&(bp -> data);
+}
+```
+
+我们会用 `bread` 函数把文件中的一个 `block` 读到一个 `buf` 中， 而这个函数直接返回这个 `buf` 的地址。 这里返回的是虚拟地址， 但由于此时在内核态， 内核态的 `data` 区域是直接映射的， 所以它也是物理地址。 然后我在 `usertrap` 中建立页表映射， 从 `va` 映射到这个 `buf` 的物理地址即可。
+
 ## DEBUG
 
-调了一整天终于发现了 bug 来源！！ 是这里的 `pa` 没有满足 `page alignment`! 所以 `mapping` 函数产生了错误！
+上述函数写完了之后就一直第一个测试出现 `mismatch at 0`。 而且很奇怪的是， 我发现在 `usertrap` 中打输出的时候， 虚拟地址和物理地址都没问题， 却在测试文件中物理地址上的值有问题。  
 
+后来调了一整天终于发现了 bug 来源！！ 是这里的 `pa` 没有满足 `page alignment`! 所以 `mapping` 函数产生了错误！ `mapping` 函数会自动做 `PGROUND`, 所以我映射到的物理地址是 `PGROUND` 之后的， 所以它是错位了的物理地址！
 
+那这怎么解决呢?  根本原因在于 `buf.data` 不是按 `PAGESIZE` 对齐的。 这里我用一个很方便的办法: 直接用 C 语言自带的内存对齐指令:
 
 ```c
 struct buf 
@@ -1348,9 +1450,15 @@ struct buf
 };
 ```
 
+这个问题就顺利解决了！
+
+接下来我们来修改 `munmap`, `exit` 和 `fork`。
+
 ## munmap
 
-这里的问题是如何通过 `data` 区域找到 `buffer` 对应的 `refcnt`？ 这里我需要知道的是， `struct buf` 结构体内的各成员在内存中是连续的 (不过有一些结构体对齐问题)。 我可以通过 offset 从 `buf.data` 找到 `buf.refcnt`.
+这里我们不真实释放 (kfree) 对应物理页， 而是 `unpin` 那个 `buf`, 即减少 `refcnt`.
+
+这里的问题是如何通过 `buf.data` 区域的指针找到 `buf`的指针？ 这里我需要知道的是， `struct buf` 结构体内的各成员在内存中是连续的 (只是有一些结构体对齐问题， 但仍然大致上是连续的)。 我可以通过 offset 从 `buf.data` 的指针找到 `buf` 的指针.
 
 具体而言， 我可以设计这样的函数:
 
@@ -1362,7 +1470,9 @@ struct buf * get_buf_from_data(uchar *p_data)
 }
 ```
 
-我写了个程序验证:
+它会用 `offsetof` 函数拿到一个成员在结构体中的偏置。 
+
+我专门写了个程序验证这个函数的正确性。
 
 ```c
 #include <stddef.h>
@@ -1405,3 +1515,52 @@ int main()
     return 0;
 }
 ```
+
+后来发现这个函数是正确的。 所以我把 `munmap` 改成这样:
+
+```c
+  uint64 pa;
+
+  for(int unmap_addr = addr; unmap_addr < addr + length; unmap_addr += PGSIZE)
+  {
+    if((pa = walkaddr(my_proc -> pagetable, unmap_addr)) != 0)
+    {
+      // walkaddr will return the physical address corresponding to 
+      // vitual address "unmap_addr"
+      // if it's 0, then it's unmapped
+      // And I should NOT write to file or unmap the mapping if it's 0
+
+      // Check if I need to write back to the file
+      // Notice !! This must happen before doing the "uvmunmap"
+      if((pointer_to_vma -> flags & MAP_SHARED)
+       && (pointer_to_vma -> prot & PROT_WRITE) 
+       && (pointer_to_vma -> vma_file -> writable))
+       // Notice!! I also have to ensure that the file is writable to me
+      {
+        if(filewrite(pointer_to_vma -> vma_file, unmap_addr, PGSIZE) < 0)
+        {
+          return -1;
+        }
+      }
+
+      // Get the buffer address and unpin it
+      struct buf * mybuf = get_buf_from_data((uchar * )pa);
+      bunpin(mybuf);
+
+
+      uvmunmap(my_proc -> pagetable, unmap_addr, 1, 0);
+      // unmap one page at a time, do not kfree the physical page here
+      
+    }
+  }
+  ```
+
+  这里我们拿到 `buf.data` 的物理地址， 然后调用上述函数拿到 `buf` 的物理地址， 然后调用 `bunpin` 函数减少 `refcnt` (此处是内核态， 所以 `buf` 的物理地址就是虚拟地址). 另外注意， 这里 `uvmunmap` 就不要释放物理内存了， 最后一个参数传入 `0`.
+
+  ## exit
+
+  `exit` 也是同样的处理方式, 就不做赘述了。 另外 `fork` 系统调用是不需要修改的。
+
+  ### DEBUG
+
+  现在只有一个测试点出错， 其他测试点全都通过了。 出错的测试点是 `test mmap read/write` 中的 `_v1` 函数。 把它注释掉就全部通过了。

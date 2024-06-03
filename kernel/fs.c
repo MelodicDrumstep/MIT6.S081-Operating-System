@@ -592,7 +592,7 @@ stati(struct inode *ip, struct stat *st)
   st->size = ip->size;
 }
 
-// #define DEBUG_READIBUF
+#define DEBUG_READIBUF
 
 // a new version of readi that will return the address of the buffer
 // holding the data of the block

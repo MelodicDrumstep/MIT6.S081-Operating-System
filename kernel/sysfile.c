@@ -678,6 +678,8 @@ sys_pipe(void)
   return 0;
 }
 
+//#define DEBUG_MMAP
+
 uint64 
 sys_mmap(void)
 {
@@ -733,6 +735,12 @@ sys_mmap(void)
   || (file != my_proc -> ofile[fd]))
   // file should be the same as ofile[fd]
   {
+    // DEBUGING
+    #ifdef DEBUG
+      printf("file is not right!\n");
+    #endif
+    // DEBUGING
+
     return 0xffffffffffffffff;
   }
 

@@ -9,7 +9,7 @@
 #include "struct_file.h"
 #include "struct_inode.h"
 
-// #define DEBUG
+#define DEBUG
 
 #ifdef DEBUG
 int truth = 1;
