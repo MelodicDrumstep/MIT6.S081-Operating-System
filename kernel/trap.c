@@ -9,7 +9,11 @@
 #include "struct_file.h"
 #include "struct_inode.h"
 
-#define DEBUG
+// #define DEBUG
+
+#ifdef DEBUG
+int truth = 1;
+#endif
 //#define DEBUG2
 
 struct spinlock tickslock;
@@ -126,14 +130,18 @@ usertrap(void)
 
     va = PGROUNDDOWN(va);
     uint64 pa;
-    if((pa = (uint64)kalloc()) == 0)
-    {
-      panic("No available resouces to alloc");
-    }
-    // alloc the physical space
-    // Now I haven't create any mapping in the page table
 
-    memset((void * )pa, 0, PGSIZE);
+    // Below is the allocation page part
+    // I don't need them for the improved version of mmap
+
+    // if((pa = (uint64)kalloc()) == 0)
+    // {
+    //   panic("No available resouces to alloc");
+    // }
+    // // alloc the physical space
+    // // Now I haven't create any mapping in the page table
+
+    // memset((void * )pa, 0, PGSIZE);
     // initialization
 
     begin_op();
@@ -166,16 +174,7 @@ usertrap(void)
     */
 
    // For debug
-    if((readi_debug(ip, 0, (uint64)pa, read_file_offset, PGSIZE)) < 0)
-    {
-      // Read the data into pa
-      iunlockput(ip);
-      end_op();
-      panic("can not read from the file");
-    }
-
-    // New version
-    // if((pa = (uint64)readi_return_buf(ip, read_file_offset)) < 0)
+    // if((readi_debug(ip, 0, (uint64)pa, read_file_offset, PGSIZE)) < 0)
     // {
     //   // Read the data into pa
     //   iunlockput(ip);
@@ -183,6 +182,26 @@ usertrap(void)
     //   panic("can not read from the file");
     // }
 
+    // DEBUGING
+    #ifdef DEBUG
+      printf("I'm going to call readi_return_buf\n");
+    #endif
+    // DEBUGING
+
+    // New version
+    if((pa = (uint64)readi_return_buf(ip, read_file_offset)) < 0)
+    {
+      // Read the data into pa
+      iunlockput(ip);
+      end_op();
+      panic("can not read from the file");
+    }
+
+    // DEBUGING
+    #ifdef DEBUG
+      printf("End of calling readi_return_buf, and pa as address is %p\n", pa);
+    #endif
+    // DEBUGING
 
     // iunlockput(ip);
     // At here, DO NOT use iput to drop a refcnt!!!
@@ -217,6 +236,17 @@ usertrap(void)
       kfree((void * )pa);
       panic("Mapping failed");
     }
+
+    // DEBUGING
+    #ifdef DEBUG
+      printf("va is %p, pa is : %p\n", va, pa);
+      printf("the first char is 0x%x\n", ((char * )pa)[0]);
+      uint64 ppa = walkaddr(p -> pagetable, va);
+      printf("ppa is %p\n", ppa);
+      printf("the first char is 0x%x\n", ((char * )ppa)[0]);
+      printf("\n");
+    #endif
+    // DEBUGING
   }
 
   else 
@@ -297,6 +327,7 @@ usertrapret(void)
   // and switches to user mode with sret.
   uint64 trampoline_userret = TRAMPOLINE + (userret - trampoline);
   ((void (*)(uint64))trampoline_userret)(satp);
+
 }
 
 // interrupts and exceptions from kernel code go here via kernelvec,

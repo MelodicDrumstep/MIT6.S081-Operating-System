@@ -8,7 +8,7 @@ struct buf
   uint refcnt;
   struct buf *next;
   struct buf *prev;
-  uchar data[BSIZE];
+  uchar data[BSIZE] __attribute__((aligned(4096)));
   int ticks;
 };
 

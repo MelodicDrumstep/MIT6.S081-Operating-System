@@ -6,13 +6,23 @@
 #include "kernel/fs.h"
 #include "user/user.h"
 
+
+#define DEBUG
+
+// DEBUGING
+#ifdef DEBUG
+
+#endif
+// DEBUGING
+
+#define USERBSIZE 1024
+
 void mmap_test();
 void fork_test();
-char buf[BSIZE];
+char buf[USERBSIZE];
 
 #define MAP_FAILED ((char *) -1)
 
-#define DEBUG
 
 int
 main(int argc, char *argv[])
@@ -40,22 +50,43 @@ _v1(char *p)
 {
   //printf("inside _v1 test, check the content of the two mapped pages\n");
   int i;
-  for (i = 0; i < PGSIZE*2; i++) 
+  for (i = 0; i < PGSIZE * 2; i++) 
   {
     // // DEBUGING
     // #ifdef DEBUG
-    //   printf("i is %d\n", i);
+    //   printf("\nInside _v1!\n");
     // #endif
     // // DEBUGING
 
     if (i < PGSIZE + (PGSIZE/2)) 
     {
-      if (p[i] != 'A') {
+
+      // // DEBUGING
+      // #ifdef DEBUG
+      //   printf("\nInside _v1 loop %d!\n", i);
+      // #endif
+      // // DEBUGING
+
+      if (p[i] != 'A') 
+      {
+
+        // DEBUGING
+        #ifdef DEBUG
+        uint64 va = (uint64)&(p[i]);
+        printf("va is : %p \n", va);
+        printf("the char is : 0x%x\n", p[i]);
+        printf("\n");
+        #endif
+        // DEBUGING
+
         printf("mismatch at %d, wanted 'A', got 0x%x\n", i, p[i]);
         err("v1 mismatch (1)");
       }
-    } else {
-      if (p[i] != 0) {
+    } 
+    else 
+    {
+      if (p[i] != 0) 
+      {
         printf("mismatch at %d, wanted zero, got 0x%x\n", i, p[i]);
         err("v1 mismatch (2)");
       }
@@ -72,17 +103,17 @@ void
 makefile(const char *f)
 {
   int i;
-  int n = PGSIZE/BSIZE;
+  int n = PGSIZE/USERBSIZE;
 
   unlink(f);
   int fd = open(f, O_WRONLY | O_CREATE);
   if (fd == -1)
     err("open");
-  memset(buf, 'A', BSIZE);
+  memset(buf, 'A', USERBSIZE);
   // write 1.5 page
   for (i = 0; i < n + n/2; i++) 
   {
-    if (write(fd, buf, BSIZE) != BSIZE)
+    if (write(fd, buf, USERBSIZE) != USERBSIZE)
       err("write 0 makefile");
   }
   if (close(fd) == -1)
@@ -127,6 +158,13 @@ mmap_test(void)
   if (p == MAP_FAILED)
     err("mmap (1)");
   _v1(p);
+  
+  // DEBUGING
+  #ifdef DEBUG
+  printf("outside _v1!!!\n");
+  #endif
+  // DEBUGING
+
   if (munmap(p, PGSIZE * 2) == -1)
     err("munmap (1)");
 

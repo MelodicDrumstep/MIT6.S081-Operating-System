@@ -1325,3 +1325,25 @@ either_copyout(int user_dst, uint64 dst, void *src, uint64 len)
 所以问题出在 `either_copyout`上: 我现在已经把文件的某些 `block` 读到内核空间的 `buffer cache` 里面了， 之后却又要新分配一个物理内存，然后把 `buffer cache` 里的东西复制过去。 这里产生了浪费！
 
 那我们修改这个函数好了。 
+
+## DEBUG
+
+调了一整天终于发现了 bug 来源！！ 是这里的 `pa` 没有满足 `page alignment`! 所以 `mapping` 函数产生了错误！
+
+
+
+```c
+struct buf 
+{
+  int valid;   // has data been read from disk?
+  int disk;    // does disk "own" buf?
+  uint dev;
+  uint blockno;
+  struct sleeplock lock;
+  uint refcnt;
+  struct buf *next;
+  struct buf *prev;
+  uchar data[BSIZE] __attribute__((aligned(4096)));
+  int ticks;
+};
+```

@@ -592,6 +592,8 @@ stati(struct inode *ip, struct stat *st)
   st->size = ip->size;
 }
 
+// #define DEBUG_READIBUF
+
 // a new version of readi that will return the address of the buffer
 // holding the data of the block
 uint64
@@ -607,13 +609,13 @@ readi_return_buf(struct inode * ip, uint off)
     return 0;
   }
 
-
   if(off + n > ip -> size)
   {
     // If offset plus n will exceed the length of the file
     // modify n, to end at the end of the file
     n = ip -> size - off;
   }
+
   uint addr = bmap(ip, off / BSIZE);
   // Use bmap to get the address of the block
 
@@ -628,9 +630,14 @@ readi_return_buf(struct inode * ip, uint off)
 
   // Pin it and increase the refcnt
   bpin(bp);
-  bp -> refcnt++;
 
   brelse(bp);
+
+  // DEBUGING
+  #ifdef DEBUG_READIBUF
+    printf("in readi_return_buf, the first char is : 0x%x\n", ((char * )&bp -> data)[0]);
+  #endif
+  // DEBUGING
 
   return (uint64)&(bp -> data);
 }
