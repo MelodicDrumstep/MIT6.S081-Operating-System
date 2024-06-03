@@ -7,6 +7,7 @@
 #include "defs.h"
 #include "fcntl.h"
 #include "struct_file.h"
+#include "kernel/get_buf_from_data.h"
 
 struct cpu cpus[NCPU];
 
@@ -469,9 +470,11 @@ exit(int status)
     length = PGROUNDUP(length);
     // ROUND addr and length
 
+    uint64 pa;
+
     for(int unmap_addr = addr; unmap_addr < addr + length; unmap_addr += PGSIZE)
     {
-      if(walkaddr(p -> pagetable, unmap_addr))
+      if((pa = walkaddr(p -> pagetable, unmap_addr)) != 0)
       {
         // walkaddr will return the physical address corresponding to 
         // vitual address "unmap_addr"
@@ -489,8 +492,13 @@ exit(int status)
             return;
           }
         }
-        uvmunmap(p -> pagetable, unmap_addr, 1, 1);
-        // unmap one page at a time
+        // Get the buffer address and unpin it
+        struct buf * mybuf = get_buf_from_data((uchar * )pa);
+        bunpin(mybuf);
+
+
+        uvmunmap(p -> pagetable, unmap_addr, 1, 0);
+        // unmap one page at a time, do not kfree the physical page here
 
         //fileclose(pointer_to_vma -> vma_file);
         // DO NOT close the file here! Because we have all files closed below

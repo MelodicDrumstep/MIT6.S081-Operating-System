@@ -1347,3 +1347,61 @@ struct buf
   int ticks;
 };
 ```
+
+## munmap
+
+这里的问题是如何通过 `data` 区域找到 `buffer` 对应的 `refcnt`？ 这里我需要知道的是， `struct buf` 结构体内的各成员在内存中是连续的 (不过有一些结构体对齐问题)。 我可以通过 offset 从 `buf.data` 找到 `buf.refcnt`.
+
+具体而言， 我可以设计这样的函数:
+
+```c
+struct buf * get_buf_from_data(uchar *p_data) 
+{
+    struct buf * p_buf = (struct buf *)((char *)p_data - offsetof(struct buf, data));
+    return p_buf;
+}
+```
+
+我写了个程序验证:
+
+```c
+#include <stddef.h>
+#include <cstdio>
+
+#define N 10
+
+struct buf 
+{
+  int valid;   // has data been read from disk?
+  int disk;    // does disk "own" buf?
+  int dev;
+  int a;
+  int b;
+  int blockno;
+  int refcnt;
+  struct buf *next;
+  struct buf *prev;
+  char data[4096] __attribute__((aligned(4096)));
+  int ticks;
+};
+
+struct buf * get_buf_from_data(char *p_data) 
+{
+    struct buf * p_buf = (struct buf *)((char *)p_data - offsetof(struct buf, data));
+    return p_buf;
+}
+
+struct buf bufs[N];
+
+int main()
+{
+    for(int i = 0; i < N; i++)
+    {
+        bufs[i].refcnt = i;
+    }
+    char * a = bufs[3].data;
+    struct buf * mybuf = get_buf_from_data(a);
+    printf("buf -> refcnt is %d \n", mybuf -> refcnt);
+    return 0;
+}
+```

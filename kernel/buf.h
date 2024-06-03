@@ -1,3 +1,8 @@
+#ifndef BUF_H
+#define BUF_H
+
+//#include <stddef.h>
+
 struct buf 
 {
   int valid;   // has data been read from disk?
@@ -12,3 +17,6 @@ struct buf
   int ticks;
 };
 
+#include "kernel/get_buf_from_data.h"
+
+#endif

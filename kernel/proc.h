@@ -4,6 +4,7 @@
 #include "defs.h"
 
 #define MAX_VMA 16
+#define MAX_BUFS 1024
 
 // Saved registers for kernel context switches.
 struct context {

@@ -15,6 +15,7 @@
 #include "sleeplock.h"
 #include "file.h"
 #include "fcntl.h"
+#include "buf.h"
 
 // #define DEBUG
 
@@ -828,9 +829,11 @@ sys_munmap(void)
   length = PGROUNDUP(length);
   // ROUND addr and length
 
+  uint64 pa;
+
   for(int unmap_addr = addr; unmap_addr < addr + length; unmap_addr += PGSIZE)
   {
-    if(walkaddr(my_proc -> pagetable, unmap_addr))
+    if((pa = walkaddr(my_proc -> pagetable, unmap_addr)) != 0)
     {
       // walkaddr will return the physical address corresponding to 
       // vitual address "unmap_addr"
@@ -864,8 +867,14 @@ sys_munmap(void)
         }
       }
 
-      uvmunmap(my_proc -> pagetable, unmap_addr, 1, 1);
-      // unmap one page at a time
+      // Get the buffer address and unpin it
+      struct buf * mybuf = get_buf_from_data((uchar * )pa);
+      bunpin(mybuf);
+
+
+      uvmunmap(my_proc -> pagetable, unmap_addr, 1, 0);
+      // unmap one page at a time, do not kfree the physical page here
+      
     }
   }
 

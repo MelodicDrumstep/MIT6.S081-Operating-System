@@ -271,3 +271,9 @@ bunpin(struct buf *b)
   b -> refcnt--;
   release(&bcache.buckets[hash_result].bucket_lock);
 }
+
+struct buf * get_buf_from_data(uchar * p_data)
+{
+    struct buf * p_buf = (struct buf *)((char *)p_data - offsetof(struct buf, data));
+    return p_buf;
+}
