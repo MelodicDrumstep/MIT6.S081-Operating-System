@@ -9,7 +9,8 @@
 #include "struct_file.h"
 #include "struct_inode.h"
 
-//#define DEBUG
+#define DEBUG
+//#define DEBUG2
 
 struct spinlock tickslock;
 uint ticks;
@@ -50,10 +51,12 @@ usertrap(void)
   // since we're now in the kernel.
   w_stvec((uint64)kernelvec);
 
+  // Notice !! This get the user process control block
+  // the user process is the one get into this kernel thread 
   struct proc *p = myproc();
   
   // save user program counter.
-  p->trapframe->epc = r_sepc();
+  p -> trapframe -> epc = r_sepc();
   
   if(r_scause() == 8)
   {
@@ -149,13 +152,37 @@ usertrap(void)
     // I should read the first 4KB w.r.t va
     // So the starting point would be (va - addr_file) + offset
 
-    if(readi(ip, 0, (uint64)pa, read_file_offset, PGSIZE) < 0)
+    /* 
+    Old version
+    -----------------------
+    if((readi(ip, 0, (uint64)pa, read_file_offset, PGSIZE)) < 0)
     {
       // Read the data into pa
       iunlockput(ip);
       end_op();
       panic("can not read from the file");
     }
+    -----------------
+    */
+
+   // For debug
+    if((readi_debug(ip, 0, (uint64)pa, read_file_offset, PGSIZE)) < 0)
+    {
+      // Read the data into pa
+      iunlockput(ip);
+      end_op();
+      panic("can not read from the file");
+    }
+
+    // New version
+    // if((pa = (uint64)readi_return_buf(ip, read_file_offset)) < 0)
+    // {
+    //   // Read the data into pa
+    //   iunlockput(ip);
+    //   end_op();
+    //   panic("can not read from the file");
+    // }
+
 
     // iunlockput(ip);
     // At here, DO NOT use iput to drop a refcnt!!!

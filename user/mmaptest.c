@@ -12,6 +12,8 @@ char buf[BSIZE];
 
 #define MAP_FAILED ((char *) -1)
 
+#define DEBUG
+
 int
 main(int argc, char *argv[])
 {
@@ -38,8 +40,16 @@ _v1(char *p)
 {
   //printf("inside _v1 test, check the content of the two mapped pages\n");
   int i;
-  for (i = 0; i < PGSIZE*2; i++) {
-    if (i < PGSIZE + (PGSIZE/2)) {
+  for (i = 0; i < PGSIZE*2; i++) 
+  {
+    // // DEBUGING
+    // #ifdef DEBUG
+    //   printf("i is %d\n", i);
+    // #endif
+    // // DEBUGING
+
+    if (i < PGSIZE + (PGSIZE/2)) 
+    {
       if (p[i] != 'A') {
         printf("mismatch at %d, wanted 'A', got 0x%x\n", i, p[i]);
         err("v1 mismatch (1)");
@@ -70,7 +80,8 @@ makefile(const char *f)
     err("open");
   memset(buf, 'A', BSIZE);
   // write 1.5 page
-  for (i = 0; i < n + n/2; i++) {
+  for (i = 0; i < n + n/2; i++) 
+  {
     if (write(fd, buf, BSIZE) != BSIZE)
       err("write 0 makefile");
   }
@@ -112,11 +123,11 @@ mmap_test(void)
   // of the file to be mapped. the last argument is the starting
   // offset in the file.
   //
-  char *p = mmap(0, PGSIZE*2, PROT_READ, MAP_PRIVATE, fd, 0);
+  char *p = mmap(0, PGSIZE * 2, PROT_READ, MAP_PRIVATE, fd, 0);
   if (p == MAP_FAILED)
     err("mmap (1)");
   _v1(p);
-  if (munmap(p, PGSIZE*2) == -1)
+  if (munmap(p, PGSIZE * 2) == -1)
     err("munmap (1)");
 
   printf("test mmap f: OK\n");

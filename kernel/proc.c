@@ -36,7 +36,8 @@ proc_mapstacks(pagetable_t kpgtbl)
 {
   struct proc *p;
   
-  for(p = proc; p < &proc[NPROC]; p++) {
+  for(p = proc; p < &proc[NPROC]; p++) 
+  {
     char *pa = kalloc();
     if(pa == 0)
       panic("kalloc");
@@ -129,7 +130,8 @@ found:
   p->state = USED;
 
   // Allocate a trapframe page.
-  if((p->trapframe = (struct trapframe *)kalloc()) == 0){
+  if((p->trapframe = (struct trapframe *)kalloc()) == 0)
+  {
     freeproc(p);
     release(&p->lock);
     return 0;
@@ -782,10 +784,19 @@ killed(struct proc *p)
 int
 either_copyout(int user_dst, uint64 dst, void *src, uint64 len)
 {
-  struct proc *p = myproc();
-  if(user_dst){
-    return copyout(p->pagetable, dst, src, len);
-  } else {
+  struct proc * p = myproc();
+  if(user_dst)
+  {
+    // If the destination is a user space
+    // Then dst is a virtual address
+    // Use the pagetable and the copyout function
+    return copyout(p -> pagetable, dst, src, len);
+  }
+  else 
+  {
+    // If the destination is a kernel space
+    // Then dst is directed mapped 
+    // (Only stack space and trampoline are not directed mapped)
     memmove((char *)dst, src, len);
     return 0;
   }

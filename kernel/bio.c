@@ -31,7 +31,8 @@ struct BUCKET
   struct spinlock bucket_lock;
 };//BUCKET contains a lock and a header node of struct buf
 
-struct {
+struct 
+{
   struct spinlock master_lock;
   struct buf buf[NBUF];
   struct BUCKET buckets[BUCKET_SIZE];
@@ -218,7 +219,8 @@ bread(uint dev, uint blockno)
   struct buf *b;
 
   b = bget(dev, blockno);
-  if(!b->valid) {
+  if(!b->valid) 
+  {
     virtio_disk_rw(b, 0);
     b->valid = 1;
   }

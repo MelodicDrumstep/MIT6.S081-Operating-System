@@ -592,6 +592,110 @@ stati(struct inode *ip, struct stat *st)
   st->size = ip->size;
 }
 
+// a new version of readi that will return the address of the buffer
+// holding the data of the block
+uint64
+readi_return_buf(struct inode * ip, uint off)
+{
+  uint n = BSIZE;
+  // tot is the number of types that have been written
+  struct buf * bp;
+  if(off > ip -> size || off + n < off)
+  {
+    // If the offset exceed the length of the file, report error
+    // If offset plus n will overflow, report error
+    return 0;
+  }
+
+
+  if(off + n > ip -> size)
+  {
+    // If offset plus n will exceed the length of the file
+    // modify n, to end at the end of the file
+    n = ip -> size - off;
+  }
+  uint addr = bmap(ip, off / BSIZE);
+  // Use bmap to get the address of the block
+
+  if(addr == 0)
+  {
+    // bmap failed
+    return -1;
+  }
+  bp = bread(ip -> dev, addr);
+  // use bread to read the block into a buffer in the buffer cache
+  // and return the buffer
+
+  // Pin it and increase the refcnt
+  bpin(bp);
+  bp -> refcnt++;
+
+  brelse(bp);
+
+  return (uint64)&(bp -> data);
+}
+
+// Read data from inode.
+// Caller must hold ip->lock.
+// If user_dst==1, then dst is a user virtual address;
+// otherwise, dst is a kernel address.
+int
+readi_debug(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
+{
+  uint tot, m;
+  // tot is the number of types that have been written
+  struct buf * bp;
+
+  printf("Inside read_debug, ip -> size is %d, off is %d, n is %d\n", ip -> size, off, n);
+
+  if(off > ip -> size || off + n < off)
+  {
+    // If the offset exceed the length of the file, report error
+    // If offset plus n will overflow, report error
+    return 0;
+  }
+
+  if(off + n > ip -> size)
+  {
+    // If offset plus n will exceed the length of the file
+    // modify n, to end at the end of the file
+    n = ip -> size - off;
+  }
+
+  printf("Inside read_debug2, off is %d, n is %d\n", off, n);
+
+  for(tot = 0; tot < n; tot += m, off += m, dst += m)
+  {
+    uint addr = bmap(ip, off / BSIZE);
+    // Use bmap to get the address of the block
+
+    if(addr == 0)
+    {
+      printf("Oh no, addr == 0!\n");
+      // bmap failed
+      break;
+    }
+    bp = bread(ip -> dev, addr);
+    // use bread to read the block into a buffer in the buffer cache
+    // and return the buffer
+
+    m = min(n - tot, BSIZE - off % BSIZE);
+    // update "m"
+
+    printf("Inside loop. tot is %d, and m is %d\n", tot, m);
+    // either_copyout will copy the data in the buffer cache 
+    // into a kernel space or user space
+    if(either_copyout(user_dst, dst, bp -> data + (off % BSIZE), m) == -1) 
+    {
+      brelse(bp);
+      tot = -1;
+      break;
+    }
+    brelse(bp);
+  }
+  return tot;
+}
+
 // Read data from inode.
 // Caller must hold ip->lock.
 // If user_dst==1, then dst is a user virtual address;
@@ -600,20 +704,44 @@ int
 readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
 {
   uint tot, m;
-  struct buf *bp;
+  // tot is the number of types that have been written
+  struct buf * bp;
 
-  if(off > ip->size || off + n < off)
+  if(off > ip -> size || off + n < off)
+  {
+    // If the offset exceed the length of the file, report error
+    // If offset plus n will overflow, report error
     return 0;
-  if(off + n > ip->size)
-    n = ip->size - off;
+  }
 
-  for(tot=0; tot<n; tot+=m, off+=m, dst+=m){
-    uint addr = bmap(ip, off/BSIZE);
+  if(off + n > ip -> size)
+  {
+    // If offset plus n will exceed the length of the file
+    // modify n, to end at the end of the file
+    n = ip -> size - off;
+  }
+
+  for(tot = 0; tot < n; tot += m, off += m, dst += m)
+  {
+    uint addr = bmap(ip, off / BSIZE);
+    // Use bmap to get the address of the block
+
     if(addr == 0)
+    {
+      // bmap failed
       break;
-    bp = bread(ip->dev, addr);
-    m = min(n - tot, BSIZE - off%BSIZE);
-    if(either_copyout(user_dst, dst, bp->data + (off % BSIZE), m) == -1) {
+    }
+    bp = bread(ip -> dev, addr);
+    // use bread to read the block into a buffer in the buffer cache
+    // and return the buffer
+
+    m = min(n - tot, BSIZE - off % BSIZE);
+    // update "m"
+
+    // either_copyout will copy the data in the buffer cache 
+    // into a kernel space or user space
+    if(either_copyout(user_dst, dst, bp -> data + (off % BSIZE), m) == -1) 
+    {
       brelse(bp);
       tot = -1;
       break;

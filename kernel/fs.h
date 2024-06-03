@@ -1,12 +1,14 @@
 #ifndef FS_H
 #define FS_H
 
+#include "riscv.h"
+
 // On-disk file system format.
 // Both the kernel and user programs use this header file.
 
 
 #define ROOTINO  1   // root i-number
-#define BSIZE 1024  // block size
+#define BSIZE PGSIZE  // block size
 
 // Disk layout:
 // [ boot block | super block | log | inode blocks |

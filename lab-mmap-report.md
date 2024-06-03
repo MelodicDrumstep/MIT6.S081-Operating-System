@@ -954,46 +954,27 @@ Currently your implementation allocates a new physical page for each page read f
 #define BSIZE PGSIZE  // block size
 ```
 
-现在的问题在于， 如何找到这个 `buffer cache` 对应的物理地址？ 
-
-我们来看一下 `readi` 的实现:
+`buf` 的实现是这样的:
 
 ```c
-// Read data from inode.
-// Caller must hold ip->lock.
-// If user_dst==1, then dst is a user virtual address;
-// otherwise, dst is a kernel address.
-int
-readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
+struct buf 
 {
-  uint tot, m;
-  struct buf * bp;
-
-  if(off > ip->size || off + n < off)
-    return 0;
-  if(off + n > ip->size)
-    n = ip->size - off;
-
-  for(tot=0; tot<n; tot+=m, off+=m, dst+=m)
-  {
-    uint addr = bmap(ip, off/BSIZE);
-    if(addr == 0)
-      break;
-    bp = bread(ip->dev, addr);
-    m = min(n - tot, BSIZE - off%BSIZE);
-    if(either_copyout(user_dst, dst, bp->data + (off % BSIZE), m) == -1) 
-    {
-      brelse(bp);
-      tot = -1;
-      break;
-    }
-    brelse(bp);
-  }
-  return tot;
-}
+  int valid;   // has data been read from disk?
+  int disk;    // does disk "own" buf?
+  uint dev;
+  uint blockno;
+  struct sleeplock lock;
+  uint refcnt;
+  struct buf *next;
+  struct buf *prev;
+  uchar data[BSIZE];
+  int ticks;
+};
 ```
 
-这里我的思路是， 既然拿到了这个 `buf` 的地址， 那就直接找到它的物理地址建立映射。 可它是在内核空间中的一块内存， 它对应的物理地址如何找到？ 下面我们需要深入理解 `xv6` 是如何管理内核地址的。
+所以我们需要用的是 `data` 区域建立映射。
+
+这里我的思路是， 既然拿到了这个 `buf` 的虚拟地址， 那就直接找到它的物理地址建立映射。 可它是在内核空间中的一块内存， 它对应的物理地址如何找到？ 下面我们需要深入理解 `xv6` 是如何管理内核地址的。
 
 ## 深入理解 trap 与内核线程
 
@@ -1193,6 +1174,154 @@ w_satp(uint64 x)
 
 而当我们创建了用户进程并切换之后， 就会把 `satp` 换成用户进程的页表了， 而把 `kernel pagetable` 存入用户进程的 `proc -> trapframe -> kernel_satp` 了。
 
-## 开工！
+## 理解 readi 内部细节
 
-理解了上述过程之后， 我们接下来实现这个优化就很简单了。 
+理解了内核地址管理之后， 我们来看我们如何改进 `mmap` 的内存分配。
+
+我们之前对于 `page fault handler` 的实现是这样的:
+
+```c
+    //...
+    begin_op();
+    // Remember to enclose every operation with inode
+    // inside begin_op and end_op
+    ilock(ip);
+
+    uint64 read_file_offset = pointer_to_vma -> offset + (va - pointer_to_vma -> starting_addr);
+    // I should read the first 4KB w.r.t va
+    // So the starting point would be (va - addr_file) + offset
+
+    if(readi(ip, 0, (uint64)pa, read_file_offset, PGSIZE) < 0)
+    {
+      // Read the data into pa
+      iunlockput(ip);
+      end_op();
+      panic("can not read from the file");
+    }
+
+    // iunlockput(ip);
+    // At here, DO NOT use iput to drop a refcnt!!!
+    // Because this inode is using along the mmap block
+    // Then I should hold the refcnt along the mmap block
+    iunlock(ip);
+    end_op();
+
+    // Now set the PTE flags according to the 
+    // vma flags
+    // Notice that we manage the permission
+    // by use of PTE flags (page wide permission)
+    int flags = 0;
+    if(pointer_to_vma -> prot & PROT_READ)
+    {
+      flags |= PTE_R;
+    }
+    if(pointer_to_vma -> prot & PROT_WRITE)
+    {
+      flags |= PTE_W;
+    }
+    if(pointer_to_vma -> prot & PROT_EXEC)
+    {
+      flags |= PTE_X;
+    }
+    flags |= PTE_U;
+    // Let the user access this page
+
+    // Create page table mapping
+    if(mappages(p -> pagetable, va, PGSIZE, (uint64)pa, flags) < 0)
+    {
+      kfree((void * )pa);
+      panic("Mapping failed");
+    }
+    //...
+```
+
+这里我们来看一下 `readi` 的实现细节, 我为它写了详细注释:
+
+```c
+// Read data from inode.
+// Caller must hold ip->lock.
+// If user_dst==1, then dst is a user virtual address;
+// otherwise, dst is a kernel address.
+int
+readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
+{
+  uint tot, m;
+  // tot is the number of types that have been written
+  struct buf * bp;
+
+  if(off > ip -> size || off + n < off)
+  {
+    // If the offset exceed the length of the file, report error
+    // If offset plus n will overflow, report error
+    return 0;
+  }
+
+  if(off + n > ip -> size)
+  {
+    // If offset plus n will exceed the length of the file
+    // modify n, to end at the end of the file
+    n = ip -> size - off;
+  }
+
+  for(tot = 0; tot < n; tot += m, off += m, dst += m)
+  {
+    uint addr = bmap(ip, off / BSIZE);
+    // Use bmap to get the address of the block
+
+    if(addr == 0)
+    {
+      // bmap failed
+      break;
+    }
+    bp = bread(ip -> dev, addr);
+    // use bread to read the block into a buffer in the buffer cache
+    // and return the buffer
+
+    m = min(n - tot, BSIZE - off % BSIZE);
+    // update "m"
+
+    // either_copyout will copy the data in the buffer cache 
+    // into a kernel space or user space
+    if(either_copyout(user_dst, dst, bp -> data + (off % BSIZE), m) == -1) 
+    {
+      brelse(bp);
+      tot = -1;
+      break;
+    }
+    brelse(bp);
+  }
+  return tot;
+}
+```
+
+其中的 `either_copyout` 函数是这样实现的:
+
+```c
+// Copy to either a user address, or kernel address,
+// depending on usr_dst.
+// Returns 0 on success, -1 on error.
+int
+either_copyout(int user_dst, uint64 dst, void *src, uint64 len)
+{
+  struct proc * p = myproc();
+  if(user_dst)
+  {
+    // If the destination is a user space
+    // Then dst is a virtual address
+    // Use the pagetable and the copyout function
+    return copyout(p -> pagetable, dst, src, len);
+  }
+  else 
+  {
+    // If the destination is a kernel space
+    // Then dst is directed mapped 
+    // (Only stack space and trampoline are not directed mapped)
+    memmove((char *)dst, src, len);
+    return 0;
+  }
+}
+```
+
+所以问题出在 `either_copyout`上: 我现在已经把文件的某些 `block` 读到内核空间的 `buffer cache` 里面了， 之后却又要新分配一个物理内存，然后把 `buffer cache` 里的东西复制过去。 这里产生了浪费！
+
+那我们修改这个函数好了。 
