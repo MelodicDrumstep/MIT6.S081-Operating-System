@@ -484,6 +484,7 @@ exit(int status)
         // Check if I need to write back to the file
         // Notice !! This must happen before doing the "uvmunmap"
               if((pointer_to_vma -> flags & MAP_SHARED)
+               && !(pointer_to_vma -> flags & MAP_PRIVATE)
                && (pointer_to_vma -> prot & PROT_WRITE) 
                && (pointer_to_vma -> vma_file -> writable))
         {
@@ -494,6 +495,12 @@ exit(int status)
         }
         // Get the buffer address and unpin it
         struct buf * mybuf = get_buf_from_data((uchar * )pa);
+
+        // This is important!! I have to set the valid bit to 0 if it's private mapping
+        if(pointer_to_vma -> flags & MAP_PRIVATE)
+        {
+          Invalidate_buf(mybuf);
+        }
         bunpin(mybuf);
 
 

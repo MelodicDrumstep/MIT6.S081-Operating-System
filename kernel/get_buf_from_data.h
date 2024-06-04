@@ -5,4 +5,6 @@
 
 struct buf * get_buf_from_data(uchar *p_data);
 
+void Invalidate_buf(struct buf *);
+
 #endif

@@ -1519,62 +1519,149 @@ int main()
 后来发现这个函数是正确的。 所以我把 `munmap` 改成这样:
 
 ```c
-  uint64 pa;
+uint64 pa;
 
-  for(int unmap_addr = addr; unmap_addr < addr + length; unmap_addr += PGSIZE)
+for(int unmap_addr = addr; unmap_addr < addr + length; unmap_addr += PGSIZE)
+{
+  if((pa = walkaddr(my_proc -> pagetable, unmap_addr)) != 0)
   {
-    if((pa = walkaddr(my_proc -> pagetable, unmap_addr)) != 0)
+    // walkaddr will return the physical address corresponding to 
+    // vitual address "unmap_addr"
+    // if it's 0, then it's unmapped
+    // And I should NOT write to file or unmap the mapping if it's 0
+
+    // Check if I need to write back to the file
+    // Notice !! This must happen before doing the "uvmunmap"
+    if((pointer_to_vma -> flags & MAP_SHARED)
+      && (pointer_to_vma -> prot & PROT_WRITE) 
+      && (pointer_to_vma -> vma_file -> writable))
+      // Notice!! I also have to ensure that the file is writable to me
     {
-      // walkaddr will return the physical address corresponding to 
-      // vitual address "unmap_addr"
-      // if it's 0, then it's unmapped
-      // And I should NOT write to file or unmap the mapping if it's 0
-
-      // Check if I need to write back to the file
-      // Notice !! This must happen before doing the "uvmunmap"
-      if((pointer_to_vma -> flags & MAP_SHARED)
-       && (pointer_to_vma -> prot & PROT_WRITE) 
-       && (pointer_to_vma -> vma_file -> writable))
-       // Notice!! I also have to ensure that the file is writable to me
+      if(filewrite(pointer_to_vma -> vma_file, unmap_addr, PGSIZE) < 0)
       {
-        if(filewrite(pointer_to_vma -> vma_file, unmap_addr, PGSIZE) < 0)
-        {
-          return -1;
-        }
+        return -1;
       }
-
-      // Get the buffer address and unpin it
-      struct buf * mybuf = get_buf_from_data((uchar * )pa);
-      bunpin(mybuf);
-
-
-      uvmunmap(my_proc -> pagetable, unmap_addr, 1, 0);
-      // unmap one page at a time, do not kfree the physical page here
-      
     }
+
+    // Get the buffer address and unpin it
+    struct buf * mybuf = get_buf_from_data((uchar * )pa);
+    bunpin(mybuf);
+
+
+    uvmunmap(my_proc -> pagetable, unmap_addr, 1, 0);
+    // unmap one page at a time, do not kfree the physical page here
+    
   }
-  ```
+}
+```
 
-  这里我们拿到 `buf.data` 的物理地址， 然后调用上述函数拿到 `buf` 的物理地址， 然后调用 `bunpin` 函数减少 `refcnt` (此处是内核态， 所以 `buf` 的物理地址就是虚拟地址). 另外注意， 这里 `uvmunmap` 就不要释放物理内存了， 最后一个参数传入 `0`.
+这里我们拿到 `buf.data` 的物理地址， 然后调用上述函数拿到 `buf` 的物理地址， 然后调用 `bunpin` 函数减少 `refcnt` (此处是内核态， 所以 `buf` 的物理地址就是虚拟地址). 另外注意， 这里 `uvmunmap` 就不要释放物理内存了， 最后一个参数传入 `0`.
 
-  ## exit
+## exit
 
-  `exit` 也是同样的处理方式, 就不做赘述了。 另外 `fork` 系统调用是不需要修改的。
+`exit` 也是同样的处理方式, 就不做赘述了。 另外 `fork` 系统调用是不需要修改的。
 
-  ### DEBUG
+### DEBUG
 
-  现在只有一个测试点出错， 其他测试点全都通过了。 出错的测试点是 `test mmap read/write` 中的 `_v1` 函数。 把它注释掉就全部通过了。
+现在只有一个测试点出错， 其他测试点全都通过了。 出错的测试点是 `test mmap read/write` 中的 `_v1` 函数。 把它注释掉就全部通过了。
 
-  现在这种 `mmap` 是可以通过测试的:
+现在这种 `mmap` 是可以通过测试的:
 
-  ```c
-  char *p = mmap(0, PGSIZE * 2, PROT_READ, MAP_PRIVATE, fd, 0);
-  ```
+```c
+char *p = mmap(0, PGSIZE * 2, PROT_READ, MAP_PRIVATE, fd, 0);
+```
 
-  但是这种就过不了:
+但是这种就过不了:
 
-  ```c
-    p = mmap(0, PGSIZE*2, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
-  ```
+```c
+  p = mmap(0, PGSIZE*2, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+```
 
-  具体问题明天再找。
+具体问题明天再找。
+
+更新:终于找到问题了！！！
+
+我发现问题不是出在上述所说的 `mmap` 中， 而是它之前的这次 `mmap`， 把这次 `mmap` 注释掉就不会出错:
+
+```c
+  p = mmap(0, PGSIZE*2, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+  if (p == MAP_FAILED)
+    err("mmap (2)");
+  if (close(fd) == -1)
+    err("close (1)");
+  _v1(p);
+  for (i = 0; i < PGSIZE*2; i++)
+    p[i] = 'Z';
+  if (munmap(p, PGSIZE*2) == -1)
+    err("munmap (2)");
+```
+
+具体是怎么出错了呢？ 这里是 `MAP_PRIVATE`， 我把 `p[i]` 赋值为 `'Z'` 按理说是不影响到文件内容的 (不会写回)。 但是这里却使得下面的 `mmap` 读到了这个 `'Z'`! 而且很奇怪的一点是， 这里真的没有写回文件。 那是怎么回事呢？
+
+原来是 `buffer cache` 这里的一致性问题！ 我们的 `readi_return_buf` 会调用 `bread` 来读取文件， 它是这么实现的:
+
+```c
+// Return a locked buf with the contents of the indicated block.
+struct buf*
+bread(uint dev, uint blockno)
+{
+  struct buf *b;
+
+  b = bget(dev, blockno);
+  if(!b->valid) 
+  {
+    virtio_disk_rw(b, 0);
+    b->valid = 1;
+  }
+  return b;
+}
+```
+
+也就是说， 如果 `buffer cache` 中已经有了这个 `block` 的副本， 而且是 `valid` 的， 那我就直接用这个 `buf` 了。 否则需要真正磁盘 IO 读文件。
+
+所以这里， 虽然是 `MAP_PRIVATE` 的映射， 但是我修改了 `buffer cache` 里的 `buf`， 之后的 `mmap` 会直接读这个 `buf`， 从而读到错误的结果。那我就在 `munmap` 的时候把 `valid bit` 设置为 0 好了。我给 `munmap` 和 `exit` 增添这样几行:
+
+```c
+// Get the buffer address and unpin it
+struct buf * mybuf = get_buf_from_data((uchar * )pa);
+// This is important!! I have to set the valid bit to 0 if it's private mapping
+if(pointer_to_vma -> flags & MAP_PRIVATE)
+{
+  Invalidate_buf(mybuf);
+}
+bunpin(mybuf);
+
+uvmunmap(my_proc -> pagetable, unmap_addr, 1, 0);
+// unmap one page at a time, do not kfree the physical page here
+```
+
+即 `munmap` 的时候， 如果 mapping 类型是 `MAP_PRIVATE`， 那我不希望我对 `buf` 的修改对其他进程是可见的。 我需要把 `buf -> valid` 置为 0， 这样其他进程之后读文件不会用到 `buffer cache` 中已经被该进程修改后的 `buf`, 而是要重新从磁盘读取 `block`. 这样就避免了 `MAP_PRIVATE` 影响到其他进程的文件读写。
+
+# 大功告成！！！
+
+最终通过了所有测试！！
+
+```c
+$ mmaptest
+mmap_test starting
+test mmap f
+test mmap f: OK
+test mmap private
+test mmap private: OK
+test mmap read-only
+test mmap read-only: OK
+test mmap read/write
+test mmap read/write: OK
+test mmap dirty
+test mmap dirty: OK
+test not-mapped unmap
+test not-mapped unmap: OK
+test mmap two files
+test mmap two files: OK
+mmap_test: ALL OK
+fork_test starting
+fork_test OK
+mmaptest: all tests succeeded
+```
+
+这个 `lab` 太好玩了！ 喜欢操作系统。

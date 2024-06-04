@@ -592,7 +592,7 @@ stati(struct inode *ip, struct stat *st)
   st->size = ip->size;
 }
 
-#define DEBUG_READIBUF
+//#define DEBUG_READIBUF
 
 // a new version of readi that will return the address of the buffer
 // holding the data of the block
@@ -618,6 +618,12 @@ readi_return_buf(struct inode * ip, uint off)
 
   uint addr = bmap(ip, off / BSIZE);
   // Use bmap to get the address of the block
+
+  // DEBUGING
+  #ifdef DEBUG_READIBUF
+    printf("addr after bmap is : 0x%x\n", addr);
+  #endif
+  // DEBUGING
 
   if(addr == 0)
   {

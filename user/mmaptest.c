@@ -7,7 +7,7 @@
 #include "user/user.h"
 
 
-#define DEBUG
+//#define DEBUG
 
 // DEBUGING
 #ifdef DEBUG
@@ -105,20 +105,20 @@ _v11(char *p)
   int i;
   for (i = 0; i < PGSIZE * 2; i++) 
   {
-    // DEBUGING
-    #ifdef DEBUG
-      printf("\nInside _v11!\n");
-    #endif
-    // DEBUGING
+    // // DEBUGING
+    // #ifdef DEBUG
+    //   printf("\nInside _v11!\n");
+    // #endif
+    // // DEBUGING
 
     if (i < PGSIZE + (PGSIZE / 2)) 
     {
 
-      // DEBUGING
-      #ifdef DEBUG
-        printf("\nInside _v11 loop %d!\n", i);
-      #endif
-      // DEBUGING
+      // // DEBUGING
+      // #ifdef DEBUG
+      //   printf("\nInside _v11 loop %d!\n", i);
+      // #endif
+      // // DEBUGING
 
       if (p[i] != 'A') 
       {
@@ -182,6 +182,8 @@ mmap_test(void)
   printf("mmap_test starting\n");
   testname = "mmap_test";
 
+  char * p;
+
   //
   // create a file with known content, map it into memory, check that
   // the mapped memory has the same bytes as originally written to the
@@ -207,16 +209,16 @@ mmap_test(void)
   // of the file to be mapped. the last argument is the starting
   // offset in the file.
   //
-  char *p = mmap(0, PGSIZE * 2, PROT_READ, MAP_PRIVATE, fd, 0);
+  p = mmap(0, PGSIZE * 2, PROT_READ, MAP_PRIVATE, fd, 0);
   if (p == MAP_FAILED)
     err("mmap (1)");
   _v1(p);
   
-  // DEBUGING
-  #ifdef DEBUG
-  printf("outside _v1!!!\n");
-  #endif
-  // DEBUGING
+  // // DEBUGING
+  // #ifdef DEBUG
+  // printf("outside _v1!!!\n");
+  // #endif
+  // // DEBUGING
 
   if (munmap(p, PGSIZE * 2) == -1)
     err("munmap (1)");
@@ -274,7 +276,7 @@ mmap_test(void)
   // This is the one that matters a lot
 
   // check that the mapping still works after close(fd).
-  _v11(p);
+  _v1(p);
 
   // DEBUGING
   #ifdef DEBUG

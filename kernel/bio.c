@@ -277,3 +277,8 @@ struct buf * get_buf_from_data(uchar * p_data)
     struct buf * p_buf = (struct buf *)((char *)p_data - offsetof(struct buf, data));
     return p_buf;
 }
+
+void Invalidate_buf(struct buf * p_buf)
+{
+  p_buf -> valid = 0;
+}
