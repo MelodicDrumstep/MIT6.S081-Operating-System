@@ -887,7 +887,7 @@ fork(void)
   pointer_to_vma -> used = 0;
 ```
 
-# 大功告成！
+# 通过基础测试！
 
 最终终于通过了所有测试！！！
 
@@ -937,3 +937,731 @@ mmaptest: all tests succeeded
 + 最后修改好 `fork` 系统调用， 复制时也将 `vma` 进行复制。
 
 这样就可以实现一个 `mmap` 了。 
+
+# Improvement
+
+上述过程实现了一个简易的 `mmap` 并通过了基础测试. 现在我们来考虑对它进行优化。 任务书上是这么写的:
+
+```
+Currently your implementation allocates a new physical page for each page read from the mmap-ed file, even though the data has been read in kernel memory in the buffer cache. Modify your implementation to use that physical memory instead of allocating a new page. This requires tha file blocks be the same size as pages (set BSIZE to PGSIZE). You will need to pin mmap-ed blocks into the buffer cache, reference counts should also be considered.
+```
+
+那就来按照这个思路优化它！ 如果对应 `page` 已经在 `buffer cache` 中了， 就直接从 `buffer cache` 中读取。
+
+那我首先把 `BSIZE` 改一下:
+
+```c
+#define BSIZE PGSIZE  // block size
+```
+
+`buf` 的实现是这样的:
+
+```c
+struct buf 
+{
+  int valid;   // has data been read from disk?
+  int disk;    // does disk "own" buf?
+  uint dev;
+  uint blockno;
+  struct sleeplock lock;
+  uint refcnt;
+  struct buf *next;
+  struct buf *prev;
+  uchar data[BSIZE];
+  int ticks;
+};
+```
+
+所以我们需要用的是 `data` 区域建立映射。
+
+这里我的思路是， 既然拿到了这个 `buf` 的虚拟地址， 那就直接找到它的物理地址建立映射。 可它是在内核空间中的一块内存， 它对应的物理地址如何找到？ 下面我们需要深入理解 `xv6` 是如何管理内核地址的。
+
+## 深入理解 trap 与内核线程
+
+这里我们需要更深入地理解 `xv6` 中的 `trap` 与内核线程。 首先我们已经在 `trap lab` 中得知， 我们用户进程的地址空间是这样的：
+
+<img src="https://notes.sjtu.edu.cn/uploads/upload_e9d4701b6d664098fa4d26cbfc6cbce4.png" width="500">
+
+我们每个用户空间都会映射到一个独占的 `trapframe` 页， 这个页会在该进程陷入内核态时保存用户态的信息 (比如寄存器， program counter).
+
+`trampoline` 是一段特殊的代码， 即 `kernel/trampoline.S`. 它只有一份， 被所有用户进程共享映射。 当用户进程需要陷入内核态时，会调用这里的代码进行一些配置。
+
+另外注意，编译器编译时使用的地址都是 __offset（偏置）__. 真正执行这份程序时， 该进程的变量只会存在于该进程的空间中 (即同一份代码， 虚拟内存地址总是相同的， 但实际是物理内存地址可能不同). 把虚拟地址转换为物理地址是 `MMU (Memory Management Unit)` 为我们做的事情。 它会访问特定寄存器 `satp` 找到页表地址， 从而进行地址翻译。
+
+我们现在考虑一个用户进程需要陷入内核态， 它调用 `trampoline.S`， 把用户进程信息保存在 `trapframe` 里面， 然后跳转到 `usertrap` 函数。 请注意， __进程切换__ 只是一个操作系统虚拟化出的概念， 这里相当于我们用户态进程进行了少许配置就开始完成内核工作， "变成" 了内核线程， 完成内核工作之后又会 "变回来"。 而且上述切换过程并没有修改 "每个 CPU 上对应线程 ID" 这个数据结构， 即
+
+```c
+// Return this CPU's cpu struct.
+// Interrupts must be disabled.
+struct cpu*
+mycpu(void)
+{
+  int id = cpuid();
+  struct cpu *c = &cpus[id];
+  return c;
+}
+
+// Return the current struct proc *, or zero if none.
+struct proc*
+myproc(void)
+{
+  push_off();
+  struct cpu *c = mycpu();
+  struct proc *p = c->proc;
+  pop_off();
+  return p;
+}
+```
+
+`mycpu` 和 `myproc` 仍然会返回陷入内核态的用户进程的 ID. 所以， 我们实际上没有给 `内核进程` 设计 `process control block`. 我们这里是内核线程和用户进程的一对一模型。这种设计也有很多好处， 因为在陷入内核态之后我们往往还需要拿到之前对应的用户进程的 `process control block`. 
+
+请注意， 为什么我说上述一直描述的是 "用户进程" 而不是 "用户线程"？ 因为 `xv6` 每个进程只有一份 `trapframe`， 当前版本的 `xv6` 并不支持同一个进程的多个进程同时陷入内核态。 如果两个线程同时陷入内核态， 它们会把线程寄存器存入同一张 `trapframe page` 上， 引起覆盖。 所以， 如果要支持多线程陷入内核态， 我们需要修改 `trapframe` 的存储结构 (比如改成每个线程对应独立的 `trapframe`).
+
+现在还剩下一个问题: 内核的地址是怎么管理的？ 我们的 `xv6` 很简单， 它只有一个内核进程， 所有的内核线程是共享空间的， 而且这个空间大部分是 __直接映射__ 的， 只有 `trapframe` 和每个内核线程自己的栈空间不是直接映射的。下图是 `xv6` 的内核虚拟地址与物理地址的映射图。
+
+<img src="https://notes.sjtu.edu.cn/uploads/upload_dd4edcb78fc53333a0e4fe0d0ca4c68d.png" width="500">
+
+
+那既然是直接映射， 我们还需要为内核线程设置页表吗？ 答案是需要。 一方面， 并不是所有空间都是直接映射的。 另一方面， 因为 `MMU` 已经成为了硬件设计在体系结构中， 会自动将虚拟地址转换为物理地址。 如果没有明显收益的话，我们尽可能不添加额外逻辑绕开 `MMU`. 那解决方法也很简单: 我们创建一个直接映射的页表不就好了！ 然后我们把它存入 `trapframe -> kernel_satp` 中。
+
+`xv6` 是这样做的:
+
+首先， 我们在操作系统启动的时候 (即 main 函数)， 会调用 `kernel/vm.c` 中的这些函数配置好 `kernel pagetable`:
+
+```c
+// start() jumps here in supervisor mode on all CPUs.
+void
+main()
+{
+  if(cpuid() == 0)
+  {
+    //...
+    kinit();         // physical page allocator
+    kvminit();       // create kernel page table
+    kvminithart();   // turn on paging
+    procinit();      // process table
+    trapinit();      // trap vectors
+    trapinithart();  // install kernel trap vector
+    //...
+    userinit();      // first user process
+  } 
+  else 
+  {
+    //...
+    kvminithart();    // turn on paging
+    trapinithart();   // install kernel trap vector
+    //...
+  }
+
+  scheduler();        
+}
+```
+
+我们来看这几个函数的实现:
+
+### kvminit
+
+```c
+// Initialize the one kernel_pagetable
+void
+kvminit(void)
+{
+  kernel_pagetable = kvmmake();
+}
+```
+
+`kvminit` 会调用 `kvmmake` 创建内核页表。
+
+### kvmmake
+
+```c
+// Make a direct-map page table for the kernel.
+pagetable_t
+kvmmake(void)
+{
+  pagetable_t kpgtbl;
+
+  kpgtbl = (pagetable_t) kalloc();
+  memset(kpgtbl, 0, PGSIZE);
+
+  // uart registers
+  kvmmap(kpgtbl, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+
+  // virtio mmio disk interface
+  kvmmap(kpgtbl, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+
+  // PLIC
+  kvmmap(kpgtbl, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+
+  // map kernel text executable and read-only.
+  kvmmap(kpgtbl, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
+
+  // map kernel data and the physical RAM we'll make use of.
+  kvmmap(kpgtbl, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
+
+  // map the trampoline for trap entry/exit to
+  // the highest virtual address in the kernel.
+  kvmmap(kpgtbl, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+
+  // allocate and map a kernel stack for each process.
+  proc_mapstacks(kpgtbl);
+  
+  return kpgtbl;
+}
+```
+
+`kvmmake` 会直接映射大部分空间。 然后调用 `proc_mapstacks` 来映射栈空间。
+
+### proc_mapstacks
+
+```c
+// Allocate a page for each process's kernel stack.
+// Map it high in memory, followed by an invalid
+// guard page.
+void
+proc_mapstacks(pagetable_t kpgtbl)
+{
+  struct proc *p;
+  
+  for(p = proc; p < &proc[NPROC]; p++) 
+  {
+    char *pa = kalloc();
+    if(pa == 0)
+      panic("kalloc");
+    uint64 va = KSTACK((int) (p - proc));
+    kvmmap(kpgtbl, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  }
+}
+```
+
+请注意， 我们直接分配了 `NPROC` 个内核线程的栈空间并将其映射到了内核页表中！ 因为我们是 __每一个用户进程对应一个内核线程__， 因此这样分配是正确的。 或许我们可以采取 `lazy allocation` 的策略对这里进行优化， 不过我们先暂时抓住主题思想， 即每个内核线程有自己独立的栈空间， 它是非直接映射的。
+
+### kvminithart
+
+```c
+// Switch h/w page table register to the kernel's page table,
+// and enable paging.
+void
+kvminithart()
+{
+  // wait for any previous writes to the page table memory to finish.
+  sfence_vma();
+
+  w_satp(MAKE_SATP(kernel_pagetable));
+
+  // flush stale entries from the TLB.
+  sfence_vma();
+}
+```
+
+这里会调用 `w_satp` 配置内核页表至 `satp` 寄存器，我们来看这个函数.
+
+### w_satp
+
+```c
+// supervisor address translation and protection;
+// holds the address of the page table.
+static inline void 
+w_satp(uint64 x)
+{
+  asm volatile("csrw satp, %0" : : "r" (x));
+}
+```
+
+这里 `w_satp` 会调用 `compare and swap` 指令写入 `satp` 寄存器， 即配置 `kernel pagetable` 进入寄存器。
+
+请注意， 只有 `cpuid = 1` 的 CPU 会调用 `kvminit` 函数创建内核页表， 但是所有 `CPU` 都会调用 `kvminithart` 把页表寄存器配置为内核页表。 所以执行完之后所有页表寄存器都是内核页表了。
+
+而当我们创建了用户进程并切换之后， 就会把 `satp` 换成用户进程的页表了， 而把 `kernel pagetable` 存入用户进程的 `proc -> trapframe -> kernel_satp` 了。
+
+## 理解 readi 内部细节
+
+理解了内核地址管理之后， 我们来看我们如何改进 `mmap` 的内存分配。
+
+我们之前对于 `page fault handler` 的实现是这样的:
+
+```c
+    //...
+    begin_op();
+    // Remember to enclose every operation with inode
+    // inside begin_op and end_op
+    ilock(ip);
+
+    uint64 read_file_offset = pointer_to_vma -> offset + (va - pointer_to_vma -> starting_addr);
+    // I should read the first 4KB w.r.t va
+    // So the starting point would be (va - addr_file) + offset
+
+    if(readi(ip, 0, (uint64)pa, read_file_offset, PGSIZE) < 0)
+    {
+      // Read the data into pa
+      iunlockput(ip);
+      end_op();
+      panic("can not read from the file");
+    }
+
+    // iunlockput(ip);
+    // At here, DO NOT use iput to drop a refcnt!!!
+    // Because this inode is using along the mmap block
+    // Then I should hold the refcnt along the mmap block
+    iunlock(ip);
+    end_op();
+
+    // Now set the PTE flags according to the 
+    // vma flags
+    // Notice that we manage the permission
+    // by use of PTE flags (page wide permission)
+    int flags = 0;
+    if(pointer_to_vma -> prot & PROT_READ)
+    {
+      flags |= PTE_R;
+    }
+    if(pointer_to_vma -> prot & PROT_WRITE)
+    {
+      flags |= PTE_W;
+    }
+    if(pointer_to_vma -> prot & PROT_EXEC)
+    {
+      flags |= PTE_X;
+    }
+    flags |= PTE_U;
+    // Let the user access this page
+
+    // Create page table mapping
+    if(mappages(p -> pagetable, va, PGSIZE, (uint64)pa, flags) < 0)
+    {
+      kfree((void * )pa);
+      panic("Mapping failed");
+    }
+    //...
+```
+
+这里我们来看一下 `readi` 的实现细节, 我为它写了详细注释:
+
+```c
+// Read data from inode.
+// Caller must hold ip->lock.
+// If user_dst==1, then dst is a user virtual address;
+// otherwise, dst is a kernel address.
+int
+readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
+{
+  uint tot, m;
+  // tot is the number of types that have been written
+  struct buf * bp;
+
+  if(off > ip -> size || off + n < off)
+  {
+    // If the offset exceed the length of the file, report error
+    // If offset plus n will overflow, report error
+    return 0;
+  }
+
+  if(off + n > ip -> size)
+  {
+    // If offset plus n will exceed the length of the file
+    // modify n, to end at the end of the file
+    n = ip -> size - off;
+  }
+
+  for(tot = 0; tot < n; tot += m, off += m, dst += m)
+  {
+    uint addr = bmap(ip, off / BSIZE);
+    // Use bmap to get the address of the block
+
+    if(addr == 0)
+    {
+      // bmap failed
+      break;
+    }
+    bp = bread(ip -> dev, addr);
+    // use bread to read the block into a buffer in the buffer cache
+    // and return the buffer
+
+    m = min(n - tot, BSIZE - off % BSIZE);
+    // update "m"
+
+    // either_copyout will copy the data in the buffer cache 
+    // into a kernel space or user space
+    if(either_copyout(user_dst, dst, bp -> data + (off % BSIZE), m) == -1) 
+    {
+      brelse(bp);
+      tot = -1;
+      break;
+    }
+    brelse(bp);
+  }
+  return tot;
+}
+```
+
+其中的 `either_copyout` 函数是这样实现的:
+
+```c
+// Copy to either a user address, or kernel address,
+// depending on usr_dst.
+// Returns 0 on success, -1 on error.
+int
+either_copyout(int user_dst, uint64 dst, void *src, uint64 len)
+{
+  struct proc * p = myproc();
+  if(user_dst)
+  {
+    // If the destination is a user space
+    // Then dst is a virtual address
+    // Use the pagetable and the copyout function
+    return copyout(p -> pagetable, dst, src, len);
+  }
+  else 
+  {
+    // If the destination is a kernel space
+    // Then dst is directed mapped 
+    // (Only stack space and trampoline are not directed mapped)
+    memmove((char *)dst, src, len);
+    return 0;
+  }
+}
+```
+
+所以问题出在 `either_copyout`上: 我现在已经把文件的某些 `block` 读到内核空间的 `buffer cache` 里面了， 之后却又要新分配一个物理内存，然后把 `buffer cache` 里的东西复制过去。 这里产生了浪费！
+
+那我们修改这个函数好了。 
+
+直接改成这个样子:
+
+```c
+void
+usertrap(void)
+{
+  //...
+  if((pa = (uint64)readi_return_buf(ip, read_file_offset)) < 0)
+  {
+    // Read the data into pa
+    iunlockput(ip);
+    end_op();
+    panic("can not read from the file");
+  }
+
+  // iunlockput(ip);
+  // At here, DO NOT use iput to drop a refcnt!!!
+  // Because this inode is using along the mmap block
+  // Then I should hold the refcnt along the mmap block
+  iunlock(ip);
+  end_op();
+
+  // Now set the PTE flags according to the 
+  // vma flags
+  // Notice that we manage the permission
+  // by use of PTE flags (page wide permission)
+  int flags = 0;
+  if(pointer_to_vma -> prot & PROT_READ)
+  {
+    flags |= PTE_R;
+  }
+  if(pointer_to_vma -> prot & PROT_WRITE)
+  {
+    flags |= PTE_W;
+  }
+  if(pointer_to_vma -> prot & PROT_EXEC)
+  {
+    flags |= PTE_X;
+  }
+  flags |= PTE_U;
+  // Let the user access this page
+
+  // Create page table mapping
+  if(mappages(p -> pagetable, va, PGSIZE, (uint64)pa, flags) < 0)
+  {
+    kfree((void * )pa);
+    panic("Mapping failed");
+  }
+  //...
+}
+```
+
+然后我写的 `readi_return_buf` 函数是这样的:
+
+```c
+// a new version of readi that will return the address of the buffer
+// holding the data of the block
+uint64
+readi_return_buf(struct inode * ip, uint off)
+{
+  uint n = BSIZE;
+  // tot is the number of types that have been written
+  struct buf * bp;
+  if(off > ip -> size || off + n < off)
+  {
+    // If the offset exceed the length of the file, report error
+    // If offset plus n will overflow, report error
+    return 0;
+  }
+
+  if(off + n > ip -> size)
+  {
+    // If offset plus n will exceed the length of the file
+    // modify n, to end at the end of the file
+    n = ip -> size - off;
+  }
+
+  uint addr = bmap(ip, off / BSIZE);
+  // Use bmap to get the address of the block
+
+  if(addr == 0)
+  {
+    // bmap failed
+    return -1;
+  }
+  bp = bread(ip -> dev, addr);
+  // use bread to read the block into a buffer in the buffer cache
+  // and return the buffer
+
+  // Pin it and increase the refcnt
+  bpin(bp);
+
+  brelse(bp);
+
+  return (uint64)&(bp -> data);
+}
+```
+
+我们会用 `bread` 函数把文件中的一个 `block` 读到一个 `buf` 中， 而这个函数直接返回这个 `buf` 的地址。 这里返回的是虚拟地址， 但由于此时在内核态， 内核态的 `data` 区域是直接映射的， 所以它也是物理地址。 然后我在 `usertrap` 中建立页表映射， 从 `va` 映射到这个 `buf` 的物理地址即可。
+
+## DEBUG
+
+上述函数写完了之后就一直第一个测试出现 `mismatch at 0`。 而且很奇怪的是， 我发现在 `usertrap` 中打输出的时候， 虚拟地址和物理地址都没问题， 却在测试文件中物理地址上的值有问题。  
+
+后来调了一整天终于发现了 bug 来源！！ 是这里的 `pa` 没有满足 `page alignment`! 所以 `mapping` 函数产生了错误！ `mapping` 函数会自动做 `PGROUND`, 所以我映射到的物理地址是 `PGROUND` 之后的， 所以它是错位了的物理地址！
+
+那这怎么解决呢?  根本原因在于 `buf.data` 不是按 `PAGESIZE` 对齐的。 这里我用一个很方便的办法: 直接用 C 语言自带的内存对齐指令:
+
+```c
+struct buf 
+{
+  int valid;   // has data been read from disk?
+  int disk;    // does disk "own" buf?
+  uint dev;
+  uint blockno;
+  struct sleeplock lock;
+  uint refcnt;
+  struct buf *next;
+  struct buf *prev;
+  uchar data[BSIZE] __attribute__((aligned(4096)));
+  int ticks;
+};
+```
+
+这个问题就顺利解决了！
+
+接下来我们来修改 `munmap`, `exit` 和 `fork`。
+
+## munmap
+
+这里我们不真实释放 (kfree) 对应物理页， 而是 `unpin` 那个 `buf`, 即减少 `refcnt`.
+
+这里的问题是如何通过 `buf.data` 区域的指针找到 `buf`的指针？ 这里我需要知道的是， `struct buf` 结构体内的各成员在内存中是连续的 (只是有一些结构体对齐问题， 但仍然大致上是连续的)。 我可以通过 offset 从 `buf.data` 的指针找到 `buf` 的指针.
+
+具体而言， 我可以设计这样的函数:
+
+```c
+struct buf * get_buf_from_data(uchar *p_data) 
+{
+    struct buf * p_buf = (struct buf *)((char *)p_data - offsetof(struct buf, data));
+    return p_buf;
+}
+```
+
+它会用 `offsetof` 函数拿到一个成员在结构体中的偏置。 
+
+我专门写了个程序验证这个函数的正确性。
+
+```c
+#include <stddef.h>
+#include <cstdio>
+
+#define N 10
+
+struct buf 
+{
+  int valid;   // has data been read from disk?
+  int disk;    // does disk "own" buf?
+  int dev;
+  int a;
+  int b;
+  int blockno;
+  int refcnt;
+  struct buf *next;
+  struct buf *prev;
+  char data[4096] __attribute__((aligned(4096)));
+  int ticks;
+};
+
+struct buf * get_buf_from_data(char *p_data) 
+{
+    struct buf * p_buf = (struct buf *)((char *)p_data - offsetof(struct buf, data));
+    return p_buf;
+}
+
+struct buf bufs[N];
+
+int main()
+{
+    for(int i = 0; i < N; i++)
+    {
+        bufs[i].refcnt = i;
+    }
+    char * a = bufs[3].data;
+    struct buf * mybuf = get_buf_from_data(a);
+    printf("buf -> refcnt is %d \n", mybuf -> refcnt);
+    return 0;
+}
+```
+
+后来发现这个函数是正确的。 所以我把 `munmap` 改成这样:
+
+```c
+uint64 pa;
+
+for(int unmap_addr = addr; unmap_addr < addr + length; unmap_addr += PGSIZE)
+{
+  if((pa = walkaddr(my_proc -> pagetable, unmap_addr)) != 0)
+  {
+    // walkaddr will return the physical address corresponding to 
+    // vitual address "unmap_addr"
+    // if it's 0, then it's unmapped
+    // And I should NOT write to file or unmap the mapping if it's 0
+
+    // Check if I need to write back to the file
+    // Notice !! This must happen before doing the "uvmunmap"
+    if((pointer_to_vma -> flags & MAP_SHARED)
+      && (pointer_to_vma -> prot & PROT_WRITE) 
+      && (pointer_to_vma -> vma_file -> writable))
+      // Notice!! I also have to ensure that the file is writable to me
+    {
+      if(filewrite(pointer_to_vma -> vma_file, unmap_addr, PGSIZE) < 0)
+      {
+        return -1;
+      }
+    }
+
+    // Get the buffer address and unpin it
+    struct buf * mybuf = get_buf_from_data((uchar * )pa);
+    bunpin(mybuf);
+
+
+    uvmunmap(my_proc -> pagetable, unmap_addr, 1, 0);
+    // unmap one page at a time, do not kfree the physical page here
+    
+  }
+}
+```
+
+这里我们拿到 `buf.data` 的物理地址， 然后调用上述函数拿到 `buf` 的物理地址， 然后调用 `bunpin` 函数减少 `refcnt` (此处是内核态， 所以 `buf` 的物理地址就是虚拟地址). 另外注意， 这里 `uvmunmap` 就不要释放物理内存了， 最后一个参数传入 `0`.
+
+## exit
+
+`exit` 也是同样的处理方式, 就不做赘述了。 另外 `fork` 系统调用是不需要修改的。
+
+### DEBUG
+
+现在只有一个测试点出错， 其他测试点全都通过了。 出错的测试点是 `test mmap read/write` 中的 `_v1` 函数。 把它注释掉就全部通过了。
+
+现在这种 `mmap` 是可以通过测试的:
+
+```c
+char *p = mmap(0, PGSIZE * 2, PROT_READ, MAP_PRIVATE, fd, 0);
+```
+
+但是这种就过不了:
+
+```c
+  p = mmap(0, PGSIZE*2, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+```
+
+具体问题明天再找。
+
+更新:终于找到问题了！！！
+
+我发现问题不是出在上述所说的 `mmap` 中， 而是它之前的这次 `mmap`， 把这次 `mmap` 注释掉就不会出错:
+
+```c
+  p = mmap(0, PGSIZE*2, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+  if (p == MAP_FAILED)
+    err("mmap (2)");
+  if (close(fd) == -1)
+    err("close (1)");
+  _v1(p);
+  for (i = 0; i < PGSIZE*2; i++)
+    p[i] = 'Z';
+  if (munmap(p, PGSIZE*2) == -1)
+    err("munmap (2)");
+```
+
+具体是怎么出错了呢？ 这里是 `MAP_PRIVATE`， 我把 `p[i]` 赋值为 `'Z'` 按理说是不影响到文件内容的 (不会写回)。 但是这里却使得下面的 `mmap` 读到了这个 `'Z'`! 而且很奇怪的一点是， 这里真的没有写回文件。 那是怎么回事呢？
+
+原来是 `buffer cache` 这里的一致性问题！ 我们的 `readi_return_buf` 会调用 `bread` 来读取文件， 它是这么实现的:
+
+```c
+// Return a locked buf with the contents of the indicated block.
+struct buf*
+bread(uint dev, uint blockno)
+{
+  struct buf *b;
+
+  b = bget(dev, blockno);
+  if(!b->valid) 
+  {
+    virtio_disk_rw(b, 0);
+    b->valid = 1;
+  }
+  return b;
+}
+```
+
+也就是说， 如果 `buffer cache` 中已经有了这个 `block` 的副本， 而且是 `valid` 的， 那我就直接用这个 `buf` 了。 否则需要真正磁盘 IO 读文件。
+
+所以这里， 虽然是 `MAP_PRIVATE` 的映射， 但是我修改了 `buffer cache` 里的 `buf`， 之后的 `mmap` 会直接读这个 `buf`， 从而读到错误的结果。那我就在 `munmap` 的时候把 `valid bit` 设置为 0 好了。我给 `munmap` 和 `exit` 增添这样几行:
+
+```c
+// Get the buffer address and unpin it
+struct buf * mybuf = get_buf_from_data((uchar * )pa);
+// This is important!! I have to set the valid bit to 0 if it's private mapping
+if(pointer_to_vma -> flags & MAP_PRIVATE)
+{
+  Invalidate_buf(mybuf);
+}
+bunpin(mybuf);
+
+uvmunmap(my_proc -> pagetable, unmap_addr, 1, 0);
+// unmap one page at a time, do not kfree the physical page here
+```
+
+即 `munmap` 的时候， 如果 mapping 类型是 `MAP_PRIVATE`， 那我不希望我对 `buf` 的修改对其他进程是可见的。 我需要把 `buf -> valid` 置为 0， 这样其他进程之后读文件不会用到 `buffer cache` 中已经被该进程修改后的 `buf`, 而是要重新从磁盘读取 `block`. 这样就避免了 `MAP_PRIVATE` 影响到其他进程的文件读写。
+
+# 大功告成！！！
+
+最终通过了所有测试！！
+
+```c
+$ mmaptest
+mmap_test starting
+test mmap f
+test mmap f: OK
+test mmap private
+test mmap private: OK
+test mmap read-only
+test mmap read-only: OK
+test mmap read/write
+test mmap read/write: OK
+test mmap dirty
+test mmap dirty: OK
+test not-mapped unmap
+test not-mapped unmap: OK
+test mmap two files
+test mmap two files: OK
+mmap_test: ALL OK
+fork_test starting
+fork_test OK
+mmaptest: all tests succeeded
+```
+
+这个 `lab` 太好玩了！ 喜欢操作系统。
